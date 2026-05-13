@@ -1,0 +1,4 @@
+httpx>=0.27
+click>=8.1
+polars>=1.0
+psutil>=5.9

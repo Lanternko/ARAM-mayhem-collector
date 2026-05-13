@@ -1,0 +1,26 @@
+# Database — contains PUUIDs (crawl tables), never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs — may contain summoner names / PUUID prefixes
+.codex/logs/
+logs/
+
+# Exports — commit only if you intend to share
+*.parquet
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
