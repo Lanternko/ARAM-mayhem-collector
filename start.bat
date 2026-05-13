@@ -5,7 +5,22 @@ echo   ARAM Mayhem 資料收集器
 echo ================================================
 echo.
 
-:: 確認 Python 存在
+:: 優先使用打包好的 exe（不需要 Python）
+if exist "%~dp0ARAM-collector.exe" (
+    echo [模式] 使用 ARAM-collector.exe
+    echo.
+    "%~dp0ARAM-collector.exe" run --platform TW2
+    if errorlevel 1 (
+        echo.
+        echo [錯誤] 收集失敗。請確認 League Client 有開著並已登入。
+        pause
+        exit /b 1
+    )
+    pause
+    exit /b 0
+)
+
+:: Fallback：使用 Python
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [錯誤] 找不到 Python！
@@ -15,6 +30,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [模式] 使用 Python
 echo [1/3] 安裝依賴套件...
 pip install -r requirements.txt --quiet
 if errorlevel 1 (
@@ -39,6 +55,6 @@ echo.
 echo 產出檔案：my_games.parquet
 echo.
 echo 請到以下連結上傳資料（把 my_games.parquet 拖進留言框）：
-echo https://github.com/Lanternko/ARAM-mayhem-collector/discussions
+echo https://github.com/Lanternko/ARAM-mayhem-collector/discussions/1
 echo.
 pause

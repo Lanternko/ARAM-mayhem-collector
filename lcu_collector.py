@@ -44,9 +44,15 @@ import polars as pl
 DEFAULT_DB = Path("data/lcu/games.db")
 
 
-@click.group()
-def cli() -> None:
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """LCU local game-data collector for ARAM / Mayhem."""
+    if ctx.invoked_subcommand is None:
+        # Double-clicked with no args: run the full TW2 collect flow
+        ctx.invoke(run, workers=4, out="my_games.parquet", platform="TW2", db=DEFAULT_DB)
+        if len(sys.argv) == 1:
+            click.pause("\n按任意鍵關閉視窗...")
 
 
 def _write_csv_rows(path: Path, rows: list[dict], schema: dict[str, pl.DataType], sort_by: list[str]) -> None:
@@ -287,6 +293,28 @@ def _decorate_rate_rows(
     return decorated
 
 
+def _frontier_active(db: Path = DEFAULT_DB) -> bool:
+    """Return True if any snowball worker is still running (pending or in_progress > 0)."""
+    if not db.exists():
+        return False
+    try:
+        con = sqlite3.connect(str(db))
+        row = con.execute(
+            "SELECT COUNT(*) FROM crawl_queue WHERE status IN ('pending', 'in_progress')"
+        ).fetchone()
+        con.close()
+        return (row[0] if row else 0) > 0
+    except Exception:
+        return False
+
+
+def _collector_base_cmd() -> list[str]:
+    """Return the base command to invoke this collector (handles frozen exe vs. plain Python)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-u", str(Path(__file__).resolve())]
+
+
 def _build_snowball_subprocess_args(
     *,
     db: Path,
@@ -308,10 +336,7 @@ def _build_snowball_subprocess_args(
     apex_cap: int,
     max_depth: int,
 ) -> list[str]:
-    args = [
-        sys.executable,
-        "-u",
-        str(Path(__file__).resolve()),
+    args = _collector_base_cmd() + [
         "snowball",
         "--db",
         str(db),
@@ -1144,6 +1169,91 @@ def status(db: Path) -> None:
         click.echo("  crawl sources:")
         for source, count in crawl_sources:
             click.echo(f"    {source:<7} {count}")
+
+
+# --------------------------------------------------------------------- run ----
+
+@cli.command()
+@click.option("--workers", default=4, show_default=True, type=int,
+              help="Parallel crawl workers")
+@click.option("--out", default="my_games.parquet", show_default=True,
+              help="Output parquet filename")
+@click.option("--platform", default="", help="Your server tag, e.g. TW2, KR, EUW1 (metadata only)")
+@click.option("--db", default=DEFAULT_DB, type=click.Path(path_type=Path), show_default=True)
+def run(workers: int, out: str, platform: str, db: Path) -> None:
+    """Full collect-and-export flow: snowball crawl then export to parquet.
+
+    This is the single command used by the packaged exe and start.bat.
+    """
+    out_path = Path(out)
+    platform_args = ["--platform", platform] if platform else []
+    base = _collector_base_cmd()
+
+    click.echo(f"[collect] Starting {workers}-worker snowball crawl. Make sure League client is open.")
+    click.echo(f"[collect] Output will be saved to: {out_path}")
+    click.echo()
+
+    subprocess.run(
+        base + [
+            "snowball-workers",
+            "--workers", str(workers),
+            "--target-games", "20000",
+            "--max-players", "20000",
+            "--games-per-player", "20",
+            "--max-depth", "6",
+            "--seed-ladder", "--seed-apex",
+        ],
+        check=True,
+    )
+
+    click.echo("[collect] Workers running in background — waiting for them to finish...")
+    last_total = 0
+    while _frontier_active(db):
+        try:
+            con = sqlite3.connect(str(db))
+            total = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+            pending = con.execute(
+                "SELECT COUNT(*) FROM crawl_queue WHERE status='pending'"
+            ).fetchone()[0]
+            in_prog = con.execute(
+                "SELECT COUNT(*) FROM crawl_queue WHERE status='in_progress'"
+            ).fetchone()[0]
+            con.close()
+            if total != last_total:
+                click.echo(f"  games={total}  pending={pending}  in_progress={in_prog}")
+                last_total = total
+        except Exception:
+            pass
+        time.sleep(10)
+
+    click.echo()
+    final_total = 0
+    try:
+        con = sqlite3.connect(str(db))
+        final_total = con.execute(
+            "SELECT COUNT(*) FROM games WHERE queue_id=2400"
+        ).fetchone()[0]
+        con.close()
+    except Exception:
+        pass
+    click.echo(f"[collect] Crawl complete. {final_total} Mayhem games in database.")
+
+    click.echo(f"[collect] Exporting to {out_path} ...")
+    subprocess.run(
+        base + [
+            "export",
+            "--queue", "2400",
+            "--out", str(out_path),
+            *platform_args,
+        ],
+        check=True,
+    )
+
+    click.echo()
+    click.echo(f"[collect] Done!  ->  {out_path}  ({final_total} games)")
+    click.echo()
+    click.echo(f"  上傳到這裡: https://github.com/Lanternko/ARAM-mayhem-collector/discussions/1")
+    click.echo(f"  留言格式: 伺服器：{platform or 'TW2'}  場次數：{final_total}")
 
 
 if __name__ == "__main__":
