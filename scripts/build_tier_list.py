@@ -222,8 +222,10 @@ def load_augment_descriptions(cache_dir: Path) -> dict[int, str]:
 # Format: aid -> TW name as it actually appears in the game client.
 AUGMENT_NAME_OVERRIDES: dict[int, str] = {
     # Internal: Kiwi_UltimateAwakening; icon ZeroHour_small.png.
-    # CommunityDragon zh_tw: 「大絕覺醒」, but Garena ships it as 「最終形態」.
-    1349: "最終形態",
+    # CommunityDragon zh_tw: 「大絕覺醒」, Garena TW client ships 「最終型態」
+    # (型 not 形 — Garena consistently picks 型態 over 形態 for "form" in
+    # game context).  Verified against live client screenshot 2026-05-15.
+    1349: "最終型態",
 }
 
 
