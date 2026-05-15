@@ -32,7 +32,7 @@ from aram_nn.lcu.client import (
 )
 from aram_nn.lcu.process import get_credentials
 from aram_nn.recommend import (
-    load_lr, parse_session, session_state_hash, suggest_for_cell,
+    ParsedSession, load_lr, parse_session, session_state_hash, suggest_for_cell,
 )
 
 
@@ -83,6 +83,39 @@ def poll_loop(stop_event: threading.Event, q: queue.Queue, model, creds, poll_in
                 stop_event.wait(poll_interval)
     except Exception as exc:  # pragma: no cover — surfaced to GUI
         q.put(("error", repr(exc)))
+
+
+def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval: float = 3.0) -> None:
+    """Synthetic poll loop for --fake mode.
+
+    Emits randomly-generated champ-select states every `interval` seconds so
+    the GUI can be validated without an LCU connection.  Predictions use the
+    real LR model on the random teams, so delta magnitudes match what real
+    play would produce — only the champion picks are synthetic.
+    """
+    import random
+
+    q.put(("static", {}))  # empty name map — GUI falls back to "#<id>"
+    all_ids = sorted(model.champ_to_idx.keys())
+    cell_id = 2
+
+    while not stop_event.is_set():
+        # Sample 10 distinct champions: 5 for my team, 5 for bench.
+        sample = random.sample(all_ids, 10)
+        my_team = sample[:5]
+        bench = sample[5:]
+        my_current = my_team[cell_id]
+
+        parsed = ParsedSession(
+            my_team_ids=my_team,
+            my_current_id=my_current,
+            my_cell_id=cell_id,
+            bench_ids=bench,
+            bench_enabled=True,
+        )
+        suggestions = suggest_for_cell(my_team, my_current, bench, model)
+        q.put(("suggestions", parsed, suggestions))
+        stop_event.wait(interval)
 
 
 # ---------- GUI ----------
@@ -234,34 +267,43 @@ class RecommenderApp:
               help="Path to tier2_checkpoint.pt or champ_to_idx.json — used for champion vocab.")
 @click.option("--poll-interval", default=1.0, show_default=True, type=float,
               help="Seconds between LCU polls while in ChampSelect.")
-def main(lr_model: Path, vocab: Path, poll_interval: float) -> None:
+@click.option("--fake", is_flag=True, default=False,
+              help="Demo mode: skip LCU, generate random champ-select states every 3s. "
+                   "Useful to verify the GUI works without launching League.")
+def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool) -> None:
     """Tk GUI for the ARAM champ-select recommender."""
-    creds = get_credentials()
-    if not creds:
-        # Show the error in a window — easier to notice than a stderr message
-        # that scrolls off when the user double-clicks the script.
-        root = tk.Tk()
-        root.title("ARAM Recommender — error")
-        root.configure(bg=BG)
-        tk.Label(
-            root, text="League client not running.\n(No LCU credentials found.)",
-            bg=BG, fg=RED, font=("Consolas", 11), padx=20, pady=20,
-        ).pack()
-        root.mainloop()
-        sys.exit(1)
-
     print(f"[gui] loading model from {lr_model}")
     model = load_lr(lr_model, vocab)
     print(f"[gui] vocab covers {model.n_champs} champions")
 
     q: queue.Queue = queue.Queue()
     stop_event = threading.Event()
-    thread = threading.Thread(
-        target=poll_loop,
-        args=(stop_event, q, model, creds, poll_interval),
-        daemon=True,
-    )
-    thread.start()
+
+    if fake:
+        print("[gui] --fake: synthesizing champ-select states every 3s, no LCU needed")
+        thread = threading.Thread(
+            target=fake_poll_loop, args=(stop_event, q, model), daemon=True,
+        )
+    else:
+        creds = get_credentials()
+        if not creds:
+            # Show the error in a window — easier to notice than a stderr message
+            # that scrolls off when the user double-clicks the script.
+            root = tk.Tk()
+            root.title("ARAM Recommender — error")
+            root.configure(bg=BG)
+            tk.Label(
+                root, text="League client not running.\n(No LCU credentials found.)\n\n"
+                           "Tip: pass --fake to demo the GUI without League.",
+                bg=BG, fg=RED, font=("Consolas", 11), padx=20, pady=20,
+            ).pack()
+            root.mainloop()
+            sys.exit(1)
+        thread = threading.Thread(
+            target=poll_loop,
+            args=(stop_event, q, model, creds, poll_interval),
+            daemon=True,
+        )
 
     root = tk.Tk()
     RecommenderApp(root, q)
