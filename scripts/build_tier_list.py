@@ -67,6 +67,35 @@ def assign_tier(bayes_wr: float) -> str:
     return "T5"
 
 
+# Data Dragon's `tags` field is Riot's *SR / general* classification, which
+# doesn't always match how ARAM/Mayhem players think about a champion.
+# These overrides REPLACE the DDragon tag list for the listed aliases.
+#
+# Codex audit (2026-05-15) identified 10 mismatches:
+#   - Nilah: critical (Marksman missing — players can't find her under 射手)
+#   - 9× mage-supports / multi-role residue: DDragon tags pollute Support /
+#     Fighter / Marksman filters with champions no Mayhem player would
+#     search for under those roles.
+TAG_OVERRIDES: dict[str, list[str]] = {
+    # Nilah is officially Fighter/Assassin but is universally picked as a
+    # melee Marksman in ARAM/Mayhem; the filter has to surface her.
+    "Nilah":        ["Marksman", "Fighter"],
+    # Mage-supports — they're played as mages in this mode; their Support
+    # tag was making the 輔助 chip noisy.
+    "Annie":        ["Mage"],
+    "Brand":        ["Mage"],
+    "Heimerdinger": ["Mage"],
+    "Hwei":         ["Mage"],
+    "Neeko":        ["Mage"],
+    "Velkoz":       ["Mage"],
+    "Xerath":       ["Mage"],
+    # Twisted Fate's Marksman tag is a relic; he's played as a Mage.
+    "TwistedFate":  ["Mage"],
+    # Vladimir's Fighter tag is misleading — he's a sustain Mage in ARAM.
+    "Vladimir":     ["Mage"],
+}
+
+
 def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
     if version is None:
         r = httpx.get("https://ddragon.leagueoflegends.com/api/versions.json", timeout=15)
@@ -80,13 +109,23 @@ def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
     r.raise_for_status()
     raw = r.json()["data"]
     by_id: dict[int, dict] = {}
+    applied: list[tuple[str, list[str], list[str]]] = []
     for _, entry in raw.items():
+        alias = entry["id"]
+        tags = entry.get("tags") or []
+        if alias in TAG_OVERRIDES:
+            applied.append((alias, list(tags), list(TAG_OVERRIDES[alias])))
+            tags = list(TAG_OVERRIDES[alias])
         by_id[int(entry["key"])] = {
             "name": entry["name"],
-            "alias": entry["id"],
-            "tags": entry.get("tags") or [],
-            "image": f"https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{entry['id']}.png",
+            "alias": alias,
+            "tags": tags,
+            "image": f"https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{alias}.png",
         }
+    if applied:
+        click.echo(f"[tierlist] applied {len(applied)} TAG_OVERRIDES (DDragon -> Mayhem mental model):")
+        for alias, before, after in applied:
+            click.echo(f"  {alias:14s} {before} -> {after}")
     return version, by_id
 
 
