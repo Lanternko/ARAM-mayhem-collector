@@ -492,7 +492,12 @@ def render_html(
         margin: 0;
         background: #0e1116;
         color: #e6e8eb;
-        font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif;
+        /* Noto Sans TC = Google's traditional Chinese sans, ships paired
+           Latin glyphs, so 「亞托克斯 (Aatrox)」 lines up properly.  System
+           fonts kept as fallback for the first paint before the webfont
+           lands. */
+        font-family: "Noto Sans TC", -apple-system, "Segoe UI",
+                     "Microsoft JhengHei", "PingFang TC", sans-serif;
         padding: 32px 24px 64px;
     }
     h1 { margin: 0 0 4px; font-weight: 600; font-size: 22px; }
@@ -1007,6 +1012,17 @@ def render_html(
     parts: list[str] = []
     parts.append("<!doctype html><html lang='zh-Hant'><head>")
     parts.extend(meta_lines)
+    # Webfont: Noto Sans TC for consistent zh-Hant + Latin rendering across
+    # devices.  `display=swap` lets system fallback paint immediately; Noto
+    # swaps in once downloaded.  Only the four weights we actually use are
+    # requested (400 body, 500 chip, 600 heading, 700 pill/badge).
+    parts.append(
+        "<link rel='preconnect' href='https://fonts.googleapis.com'>"
+        "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
+        "<link href='https://fonts.googleapis.com/css2"
+        "?family=Noto+Sans+TC:wght@400;500;600;700&display=swap' "
+        "rel='stylesheet'>"
+    )
     parts.append(f"<style>{css}</style></head><body>")
     # Header: title + subtitle on the left, "Star on GitHub" CTA on the right.
     # The repo name is the canonical project URL; if the user later forks /
