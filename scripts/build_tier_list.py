@@ -559,18 +559,6 @@ def render_html(
     .chip[data-role="Marksman"]      { --role-color: #22c55e; }
     .chip[data-role="Support"]       { --role-color: #ec4899; }
     .chip[data-role="Tank"]          { --role-color: #a855f7; }
-    .chip-reset {
-        margin-left: 4px;
-        padding: 5px 10px;
-        background: transparent;
-        color: #9aa0a6;
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        font-size: 12px;
-        cursor: pointer;
-        font-family: inherit;
-    }
-    .chip-reset:hover { color: #e6e8eb; border-color: #58606b; }
     .filter-tools {
         display: flex;
         align-items: center;
@@ -1072,7 +1060,6 @@ def render_html(
         parts.append(
             f'<button class="chip" data-role="{role_en}">{role_zh}</button>'
         )
-    parts.append('<button class="chip-reset" id="reset-filters">重設</button>')
     parts.append("</div>")  # /role-chips
     parts.append("<div class='filter-tools'>")
     parts.append(
@@ -1350,23 +1337,14 @@ def render_html(
         });
     }
 
-    // Role chip clicks (event delegation).
+    // Role chip clicks (event delegation).  "All" chip (data-role="") already
+    // unsets role filter — no dedicated reset button needed.
     document.addEventListener('click', (ev) => {
         const chip = ev.target.closest('.chip');
-        if (chip) {
-            filterState.role = chip.getAttribute('data-role') || '';
-            setActiveChip(filterState.role);
-            applyFilters();
-            return;
-        }
-        if (ev.target.id === 'reset-filters') {
-            filterState.role = '';
-            filterState.q = '';
-            setActiveChip('');
-            const s = document.getElementById('champ-search');
-            if (s) s.value = '';
-            applyFilters();
-        }
+        if (!chip) return;
+        filterState.role = chip.getAttribute('data-role') || '';
+        setActiveChip(filterState.role);
+        applyFilters();
     });
 
     // Live search.
