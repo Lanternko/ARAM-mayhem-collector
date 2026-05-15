@@ -151,8 +151,9 @@ FONT_SUB     = ("Segoe UI", 9)
 FONT_SECTION = ("Segoe UI", 8, "bold")
 FONT_NAME    = ("Segoe UI", 11)
 FONT_NAME_B  = ("Segoe UI", 11, "bold")
-FONT_NUM     = ("Consolas", 11)
-FONT_NUM_B   = ("Consolas", 11, "bold")
+FONT_NUM      = ("Consolas", 11)
+FONT_NUM_B    = ("Consolas", 11, "bold")
+FONT_NUM_BEST = ("Consolas", 13, "bold")   # one notch up; only best-pick Δ.
 
 # U+2212 MINUS SIGN — proper typographic minus instead of HYPHEN-MINUS.
 # Same width as "+" in Consolas so the columns still align.
@@ -186,28 +187,27 @@ class RecommenderApp:
 
         root.title("ARAM Recommender")
         root.attributes("-topmost", True)
-        # 0.98 keeps a hair of see-through (so a window underneath isn't a
-        # hard rectangle behind the UI), but stops the terminal text from
-        # reading through as ghosted noise the way 0.93 did.
+        # 0.98 keeps a hair of see-through so a window underneath isn't a
+        # hard rectangle behind the UI, but stops terminal text reading
+        # through as ghosted noise the way 0.93 did.
         root.attributes("-alpha", 0.98)
-        # Sized for: header + subheader + "your team" (5 rows) + divider
-        # + "bench" (up to 10 rows).  Resizable downward.
-        root.geometry("440x640+40+40")
+        # Two-column layout — wider + shorter than the vertical v3.  The
+        # 10-row bench dictates height; the team column sits beside it
+        # rather than stacked above, which suits a secondary monitor better
+        # than a tall column did.
+        root.geometry("680x520+40+40")
         root.configure(bg=BG)
-        root.minsize(400, 280)
+        root.minsize(600, 420)
 
         # Pixel-perfect column geometry, applied identically to every row
-        # frame downstream so columns line up across the team section, the
-        # bench section, and the (no-longer-present) column-header row.
-        # Tk widget `width=N` is in font-average chars; mixing FONT_SECTION
-        # (Segoe UI proportional) with FONT_NUM (Consolas mono) at the same
-        # `width=N` produced visibly different pixel widths — that was the
-        # source of the misalignment in v1.  Pinning to minsize fixes it
-        # regardless of font.
+        # frame so cells line up regardless of font.  Tk widget `width=N`
+        # is in font-average chars; mixing FONT_SECTION (Segoe UI
+        # proportional) with FONT_NUM (Consolas mono) at the same `width=N`
+        # produced visibly different pixel widths in earlier versions.
+        # Pinning to minsize fixes it regardless of font.
         self.COL_ICON   = 44   # 40px icon + 4px gutter
         self.COL_DELTA  = 64
         self.COL_Z      = 56
-        self.COL_NAME   = 1    # weight=1 — flex to fill remaining width
 
         # Tk widget constructors only accept a single int for padx/pady
         # (internal padding).  Asymmetric padding goes on the geometry
@@ -285,97 +285,92 @@ class RecommenderApp:
         )
 
         self._clear_body()
-        self._render_team_section(parsed, suggestions)
-        # Inter-section divider — quieter than a second section heading
-        # appearing immediately after the team rows.  Generous vertical
-        # padding makes the two sections feel like distinct surfaces
-        # without needing borders.
-        tk.Frame(self.body, bg=DIVIDER, height=1).pack(fill="x", pady=(14, 14))
-        self._render_bench_section(suggestions)
 
-    def _configure_row_columns(self, row: tk.Frame) -> None:
-        """Apply the shared column geometry to a row frame.
+        # Two-column body: team (static context) on the left, bench (the
+        # action zone) on the right.  Bench gets more weight because it's
+        # what the user is actually scanning during a 30-second timer.
+        self.body.grid_columnconfigure(0, weight=2, minsize=260)
+        self.body.grid_columnconfigure(1, weight=3, minsize=320)
+        self.body.grid_rowconfigure(0, weight=1)
 
-        Pinning minsize on the icon / Δ / z columns guarantees that
-        rows in the team section, the bench section, and any future
-        sections line up at the same x positions, regardless of which
-        font the cell's content uses.  The name column flexes.
-        """
+        left = tk.Frame(self.body, bg=BG)
+        left.grid(row=0, column=0, sticky="new", padx=(0, 24))
+        right = tk.Frame(self.body, bg=BG)
+        right.grid(row=0, column=1, sticky="new")
+
+        self._render_team_section(left, parsed, suggestions)
+        self._render_bench_section(right, suggestions)
+
+    def _configure_team_row(self, row: tk.Frame) -> None:
+        """Team rows only need icon + name (no Δ / no z column for teammates)."""
+        row.grid_columnconfigure(0, minsize=self.COL_ICON)
+        row.grid_columnconfigure(1, weight=1)
+
+    def _configure_bench_row(self, row: tk.Frame) -> None:
+        """Bench rows: icon + Δ + z + name."""
         row.grid_columnconfigure(0, minsize=self.COL_ICON)
         row.grid_columnconfigure(1, minsize=self.COL_DELTA)
         row.grid_columnconfigure(2, minsize=self.COL_Z)
         row.grid_columnconfigure(3, weight=1)
 
-    def _render_team_section(self, parsed, suggestions) -> None:
-        """Show all 5 blue-team champions; mark which one is the local player.
+    def _render_team_section(self, parent, parsed, suggestions) -> None:
+        """Show all 5 blue-team champions in the left column.
 
         Teammates are dimmed (you can't swap them, they're context).  Your
-        own row gets a gold name + ⊙ marker and the z-score in the same
-        z column the bench section uses, so a quick glance compares your
-        current strength against the candidates below.
+        own row gets a gold name + ⊙ marker and the z-score inline so the
+        user always knows their current meta strength as an anchor for
+        comparing the bench candidates on the right.
         """
         own_z = next(
             (s.z_score for s in suggestions if s.source == "keep" and s.is_known),
             None,
         )
 
-        section = tk.Frame(self.body, bg=BG)
-        section.pack(fill="x")
         tk.Label(
-            section, text="YOUR TEAM",
+            parent, text="YOUR TEAM",
             bg=BG, fg=DIM, anchor="w", font=FONT_SECTION,
-        ).pack(fill="x", pady=(0, 8))
+        ).pack(fill="x", pady=(0, 10))
 
         for cid in parsed.my_team_ids:
             is_me = (cid == parsed.my_current_id)
-            row = tk.Frame(section, bg=BG)
+            row = tk.Frame(parent, bg=BG)
             row.pack(fill="x", pady=2)
-            self._configure_row_columns(row)
+            self._configure_team_row(row)
 
             self._icon_cell(row, cid, bg=BG)
 
             name = self.id_to_name.get(cid, f"#{cid}")
             if is_me:
-                # Empty column 1 (where Δ would be) keeps the grid aligned
-                # with the bench rows below.
-                tk.Label(row, text="", bg=BG).grid(row=0, column=1)
-                if own_z is not None:
-                    tk.Label(
-                        row, text=_fmt_signed_z(own_z), bg=BG, fg=GOLD,
-                        font=FONT_NUM, anchor="w",
-                    ).grid(row=0, column=2, sticky="w")
+                z_str = f"   {_fmt_signed_z(own_z)}" if own_z is not None else ""
                 tk.Label(
-                    row, text=f"⊙ {name}", bg=BG, fg=GOLD,
-                    font=FONT_NAME_B, anchor="w",
-                ).grid(row=0, column=3, sticky="w")
+                    row, text=f"⊙ {name}{z_str}",
+                    bg=BG, fg=GOLD, font=FONT_NAME_B, anchor="w",
+                ).grid(row=0, column=1, sticky="w")
             else:
-                tk.Label(row, text="", bg=BG).grid(row=0, column=1)
-                tk.Label(row, text="", bg=BG).grid(row=0, column=2)
                 tk.Label(
                     row, text=name, bg=BG, fg=DIM,
                     font=FONT_NAME, anchor="w",
-                ).grid(row=0, column=3, sticky="w")
+                ).grid(row=0, column=1, sticky="w")
 
-    def _render_bench_section(self, suggestions) -> None:
-        """Show bench swap candidates with Δ% + z, sorted by Δ descending.
+    def _render_bench_section(self, parent, suggestions) -> None:
+        """Show bench swap candidates in the right column.
 
         The keep entry from `suggestions` is excluded — it's already shown
-        in the team section.  Best pick gets a full-row warm-tint background
-        (no side stripe — that's a hard ban) and a gold ★ marker; remaining
-        rows fall back to BG.
+        in the team section.  Best pick gets a full-row warm-tint
+        background (no side stripe — that's a hard ban), a slightly larger
+        bold gold Δ, and a gold ★ marker; remaining rows fall back to BG.
 
-        Column headers from v2 are removed: the subheader already explains
-        Δ + z, and the previous row used different font metrics from the
-        data rows which broke visual alignment.
+        Column-header row is intentionally absent: the subheader at the
+        top of the window explains Δ + z once, and a per-section header
+        in different font metrics from the data rows is what caused the
+        v2 alignment bug.
         """
         bench = [s for s in suggestions if s.source == "bench"]
 
-        section = tk.Frame(self.body, bg=BG)
-        section.pack(fill="x")
         tk.Label(
-            section, text=f"BENCH   ·   {len(bench)} OPTIONS",
+            parent, text=f"BENCH   ·   {len(bench)} OPTIONS",
             bg=BG, fg=DIM, anchor="w", font=FONT_SECTION,
-        ).pack(fill="x", pady=(0, 8))
+        ).pack(fill="x", pady=(0, 10))
 
         # First known bench entry is the best swap (suggestions sorted desc by Δ).
         best_idx = next((i for i, s in enumerate(bench) if s.is_known), None)
@@ -385,9 +380,9 @@ class RecommenderApp:
             row_bg = BEST_BG if is_best else BG
 
             name = self.id_to_name.get(s.champion_id, f"#{s.champion_id}")
-            row = tk.Frame(section, bg=row_bg)
+            row = tk.Frame(parent, bg=row_bg)
             row.pack(fill="x", pady=1, ipady=3)
-            self._configure_row_columns(row)
+            self._configure_bench_row(row)
             self._icon_cell(row, s.champion_id, bg=row_bg)
 
             if not s.is_known:
@@ -400,7 +395,16 @@ class RecommenderApp:
             delta_pp = s.delta * 100
             delta_text = _fmt_signed_pct(delta_pp)
             delta_color = GREEN if delta_pp > 0 else (RED if delta_pp < 0 else DIM)
-            delta_font = FONT_NUM_B if is_best else FONT_NUM
+            # The best row's Δ gets the extra visual weight: bigger + bold,
+            # in gold so it ties to the row's name color.  All others use
+            # standard FONT_NUM and the green/red signal carries the
+            # status.  Heightened Δ on the best row is the single primary
+            # affordance — the eye lands there first.
+            if is_best:
+                delta_font = FONT_NUM_BEST
+                delta_color = GOLD if delta_pp >= 0 else RED
+            else:
+                delta_font = FONT_NUM
 
             z_text = _fmt_signed_z(s.z_score)
             z_color = GREEN if s.z_score > 0.5 else (RED if s.z_score < -0.5 else FG)
