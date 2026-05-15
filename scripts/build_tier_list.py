@@ -608,32 +608,98 @@ def render_html(
         flex: 1;
         justify-content: flex-end;
     }
-    .search {
+    .search-wrap {
+        position: relative;
         flex: 1;
-        max-width: 280px;
+        max-width: 300px;
         min-width: 160px;
-        padding: 6px 12px;
-        background: #0e1116;
+    }
+    .search-wrap svg {
+        position: absolute;
+        left: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #6b7280;
+        pointer-events: none;
+    }
+    .search-wrap:focus-within svg { color: #9aa0a6; }
+    .search {
+        width: 100%;
+        padding: 7px 12px 7px 30px;
+        background: #0b0e13;
         color: #e6e8eb;
         border: 1px solid #30363d;
         border-radius: 6px;
         font-size: 13px;
         font-family: inherit;
         outline: none;
+        transition: border-color .12s, box-shadow .12s;
     }
-    .search:focus { border-color: #58606b; }
-    .shown-count { color: #9aa0a6; font-size: 12px; white-space: nowrap; }
-    .tier-block { margin-bottom: 14px; }
+    .search:focus {
+        border-color: #58606b;
+        box-shadow: 0 0 0 3px rgba(88,96,107,0.18);
+    }
+    .shown-count { color: #6b7280; font-size: 12px; white-space: nowrap; }
+    .shown-count #shown-n {
+        color: #e6e8eb;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+    /* Empty filter state — surfaces when role × search yields zero champs.
+       Mincho italic to match the caption typography elsewhere, deliberately
+       gentle (not an error) since nothing actually broke. */
+    .empty-state {
+        display: none;
+        margin: 32px auto;
+        max-width: 480px;
+        padding: 24px;
+        text-align: center;
+        color: #9aa0a6;
+        font-family: "Noto Serif TC", "Source Han Serif TC", serif;
+        font-size: 14px;
+        font-style: italic;
+        line-height: 1.6;
+    }
+    .empty-state.visible { display: block; }
+    .empty-state strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #c5cad3;
+        font-style: normal;
+        font-weight: 600;
+        font-size: 16px;
+    }
+    .tier-block { margin-bottom: 22px; position: relative; }
     .tier-block.hidden { display: none; }
     /* Tier name on its own line above the grid (replaces the old left-side
-       full-height ornament bar). */
+       full-height ornament bar).  A hairline rule tinted with the tier's
+       colour trails the heading, visually anchoring the grid to the pill. */
     .tier-heading {
         display: flex;
         align-items: center;
         gap: 10px;
-        margin: 8px 0;
+        margin: 16px 0 10px;
+        padding-bottom: 8px;
         font-size: 14px;
         font-weight: 600;
+        border-bottom: 1px solid color-mix(in oklab, var(--tier-color, #555) 30%, transparent);
+    }
+    /* OP block: faint radial wash behind the grid to elevate the apex tier
+       without resorting to a full coloured backdrop.  Same trick on T1 with
+       warmer hue and lower alpha. */
+    .tier-block[data-tier="OP"] {
+        background:
+            radial-gradient(ellipse 70% 60% at 50% 60%,
+                rgba(216,184,255,0.045) 0%, transparent 75%);
+        border-radius: 12px;
+        padding: 2px 6px 8px;
+    }
+    .tier-block[data-tier="T1"] {
+        background:
+            radial-gradient(ellipse 70% 60% at 50% 60%,
+                rgba(255,120,80,0.028) 0%, transparent 75%);
+        border-radius: 12px;
+        padding: 2px 6px 8px;
     }
     .tier-pill {
         position: relative;
@@ -956,15 +1022,32 @@ def render_html(
     .aug.rarity-kPrismatic { box-shadow: inset 0 0 0 2px #d36bff; }
     .empty { color: #6b7280; font-size: 12px; }
     .footer {
-        margin-top: 24px;
+        margin-top: 40px;
+        padding-top: 24px;
+        border-top: 1px solid #1f2530;
         color: #6b7280;
         font-size: 11px;
         text-align: center;
-        line-height: 1.6;
+        line-height: 1.7;
+    }
+    .footer .cutoffs {
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.02em;
+    }
+    .footer .cutoffs b {
+        color: #c5cad3;
+        font-weight: 600;
+        margin-right: 2px;
+    }
+    .footer .freshness {
+        margin-top: 6px;
+        color: #555a63;
     }
     .footer .disclaimer {
         max-width: 760px;
-        margin: 12px auto 0;
+        margin: 20px auto 0;
+        padding-top: 14px;
+        border-top: 1px solid #16191f;
         color: #555a63;
         font-size: 10px;
     }
@@ -1109,7 +1192,7 @@ def render_html(
     parts.append(
         f"<a class='gh-star' href='{REPO_URL}' target='_blank' rel='noopener' "
         f"title='覺得有用請幫忙按 Star ⭐'>"
-        f"{gh_icon} ⭐ Star on GitHub"
+        f"{gh_icon} Star on GitHub"
         f"</a>"
     )
     parts.append("</div>")  # /page-header
@@ -1131,13 +1214,26 @@ def render_html(
         )
     parts.append("</div>")  # /role-chips
     parts.append("<div class='filter-tools'>")
-    parts.append(
-        '<input class="search" id="champ-search" type="search" '
-        'placeholder="搜尋英雄（中 / 英 / 角色）  Ctrl+F" autocomplete="off" '
-        'aria-label="搜尋英雄">'
+    # Search input wrapped in a label with an inline magnifier SVG sitting
+    # in the input's left padding (the wrapper is positioned, the input
+    # has padding-left to clear the icon).
+    search_icon = (
+        "<svg width='14' height='14' viewBox='0 0 24 24' fill='none' "
+        "stroke='currentColor' stroke-width='2' stroke-linecap='round' "
+        "stroke-linejoin='round' aria-hidden='true'>"
+        "<circle cx='11' cy='11' r='7'></circle>"
+        "<line x1='21' y1='21' x2='16.5' y2='16.5'></line></svg>"
     )
     parts.append(
-        f'<span class="shown-count"><span id="shown-n">{len(records)}</span> 隻顯示</span>'
+        "<label class='search-wrap'>"
+        f"{search_icon}"
+        '<input class="search" id="champ-search" type="search" '
+        'placeholder="搜尋英雄（中 / 英 / 角色）   Ctrl+F" autocomplete="off" '
+        'aria-label="搜尋英雄">'
+        "</label>"
+    )
+    parts.append(
+        f'<span class="shown-count"><span id="shown-n">{len(records)}</span> / {len(records)} 隻</span>'
     )
     parts.append("</div>")  # /filter-tools
     parts.append("</div>")  # /filter-bar
@@ -1194,13 +1290,30 @@ def render_html(
         parts.append("</div>")  # /tier-grid
         parts.append("</div>")  # /tier-block
 
+    # Empty state — toggled by JS when all tiers are filtered out.
+    parts.append(
+        "<div class='empty-state' id='empty-state'>"
+        "<strong>沒有符合條件的英雄</strong>"
+        "換個角色篩選，或試試英雄中／英文名。"
+        "</div>"
+    )
+
     parts.append("<div class='footer'>")
     parts.append(
-        "Tier cutoffs (Bayes WR): OP ≥ 55% · T1 ≥ 52% · T2 ≥ 50% · "
-        "T3 ≥ 48% · T4 ≥ 46% · T5 &lt; 46%"
+        "<div class='cutoffs'>"
+        "Tier (Bayes WR): "
+        "<b>OP</b>≥55% · "
+        "<b>T1</b>≥52% · "
+        "<b>T2</b>≥50% · "
+        "<b>T3</b>≥48% · "
+        "<b>T4</b>≥46% · "
+        "<b>T5</b>&lt;46%"
+        "</div>"
     )
     if build_date:
-        parts.append(f"<br>資料截至 {build_date}（{patch_label}）")
+        parts.append(
+            f"<div class='freshness'>資料截至 {build_date}（{patch_label}）</div>"
+        )
     parts.append(
         "<div class='disclaimer'>"
         "This site isn't endorsed by Riot Games and doesn't reflect the views "
@@ -1387,6 +1500,8 @@ def render_html(
         });
         const shownN = document.getElementById('shown-n');
         if (shownN) shownN.textContent = shown;
+        const empty = document.getElementById('empty-state');
+        if (empty) empty.classList.toggle('visible', shown === 0);
 
         // If the currently-selected champ got hidden, close its detail panel.
         if (selected) {
