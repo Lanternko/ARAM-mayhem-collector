@@ -125,14 +125,56 @@ def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval:
 
 # ---------- GUI ----------
 
-# Dark palette tuned to be readable next to League's own UI.
-BG       = "#1a1a1a"
-FG       = "#dddddd"
-DIM      = "#888888"
-MUTED    = "#666666"
-GREEN    = "#4caf50"
-RED      = "#e57373"
-ACCENT   = "#ffd54f"
+# Palette — warm tinted dark neutrals + a single muted gold accent.
+#
+# Picked against the scene this UI actually shows up in: an ARAM player
+# glancing at a secondary monitor while League's cool, saturated dark UI
+# dominates the main screen.  The warmth (low-chroma amber tint) reads as
+# a "different surface" rather than competing with League's blues, and
+# the muted sage/terracotta deltas avoid the neon-tool-dashboard reflex.
+BG        = "#181612"   # warm dark, very low chroma
+SURFACE   = "#1f1c17"   # one notch lighter, used sparingly
+BEST_BG   = "#2b251a"   # full-row tint for the best-pick row (no side stripes)
+FG        = "#e5e0d4"   # warm off-white
+DIM       = "#7e7869"   # secondary text, divider hints
+MUTED     = "#4a4639"   # tertiary text, unknown / n.a.
+DIVIDER   = "#2a261e"   # barely-visible separators
+GOLD      = "#d4a73e"   # accent: you, best pick — ≤10% of pixels
+GREEN     = "#7eb05e"   # sage — positive delta
+RED       = "#c87560"   # terracotta — negative delta
+
+# Fonts — Segoe UI for prose (Windows default sans, ships with the OS and
+# pairs well next to League's own Latin UI), Consolas for tabular numbers
+# so Δ% and z columns stay aligned across rows.
+FONT_HEAD    = ("Segoe UI", 14, "bold")
+FONT_SUB     = ("Segoe UI", 9)
+FONT_SECTION = ("Segoe UI", 8, "bold")
+FONT_NAME    = ("Segoe UI", 11)
+FONT_NAME_B  = ("Segoe UI", 11, "bold")
+FONT_NUM     = ("Consolas", 11)
+FONT_NUM_B   = ("Consolas", 11, "bold")
+
+# U+2212 MINUS SIGN — proper typographic minus instead of HYPHEN-MINUS.
+# Same width as "+" in Consolas so the columns still align.
+MINUS = "−"
+
+
+def _fmt_signed_pct(value_pp: float) -> str:
+    """Format a percentage-point delta with a typographic minus for negatives."""
+    if value_pp > 0:
+        return f"+{value_pp:.1f}%"
+    if value_pp < 0:
+        return f"{MINUS}{abs(value_pp):.1f}%"
+    return f" {value_pp:.1f}%"
+
+
+def _fmt_signed_z(z: float) -> str:
+    """Format a z-score with a typographic minus for negatives."""
+    if z > 0:
+        return f"+{z:.2f}"
+    if z < 0:
+        return f"{MINUS}{abs(z):.2f}"
+    return f" {z:.2f}"
 
 
 class RecommenderApp:
@@ -153,23 +195,29 @@ class RecommenderApp:
 
         # Tk widget constructors only accept a single int for padx/pady
         # (internal padding).  Asymmetric padding goes on the geometry
-        # manager call (.pack / .grid).
+        # manager call (.pack / .grid).  We use that distinction to set
+        # generous outer rhythm without bloating the labels themselves.
         self.header = tk.Label(
-            root, text="Loading model & LCU...",
-            bg=BG, fg=FG, font=("Consolas", 12, "bold"),
-            anchor="w", padx=12,
+            root, text="Loading…",
+            bg=BG, fg=FG, font=FONT_HEAD,
+            anchor="w", padx=16,
         )
-        self.header.pack(fill="x", pady=(10, 2))
+        self.header.pack(fill="x", pady=(14, 0))
 
         self.subheader = tk.Label(
             root, text="",
-            bg=BG, fg=DIM, font=("Consolas", 9),
-            anchor="w", padx=12,
+            bg=BG, fg=DIM, font=FONT_SUB,
+            anchor="w", padx=16,
         )
-        self.subheader.pack(fill="x", pady=(0, 8))
+        self.subheader.pack(fill="x", pady=(2, 12))
+
+        # Thin divider between header and the dynamic body — replaces what
+        # a bottom border on the header would do, without violating the
+        # absolute ban on accent borders.
+        tk.Frame(root, bg=DIVIDER, height=1).pack(fill="x", padx=16)
 
         self.body = tk.Frame(root, bg=BG)
-        self.body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.body.pack(fill="both", expand=True, padx=16, pady=(12, 14))
 
         # Begin draining the queue.
         self.root.after(100, self._drain)
@@ -189,13 +237,13 @@ class RecommenderApp:
         kind = msg[0]
         if kind == "static":
             self.id_to_name = msg[1]
-            self.header.config(text="Waiting for ARAM champ select...")
-            self.subheader.config(text=f"{len(self.id_to_name)} champion names loaded")
+            self.header.config(text="Waiting for champ select", fg=FG)
+            self.subheader.config(text=f"{len(self.id_to_name)} champions loaded")
             self._clear_body()
         elif kind == "idle":
             phase = msg[1]
-            self.header.config(text=f"Idle  ({phase})")
-            self.subheader.config(text="Open League and queue for ARAM.")
+            self.header.config(text=f"Idle · {phase}", fg=DIM)
+            self.subheader.config(text="Queue for ARAM to see swap suggestions.")
             self._clear_body()
         elif kind == "error":
             self.header.config(text="LCU error", fg=RED)
@@ -212,21 +260,28 @@ class RecommenderApp:
             w.destroy()
 
     def _render(self, parsed, suggestions) -> None:
-        self.header.config(text=f"Cell {parsed.my_cell_id}  •  Average opponent", fg=FG)
+        cur_name = self.id_to_name.get(parsed.my_current_id, f"#{parsed.my_current_id}")
+        self.header.config(text=f"Cell {parsed.my_cell_id} · {cur_name}", fg=FG)
         self.subheader.config(
-            text="Δ% = swap-to win-rate change   z = champion strength (σ)"
+            text="Δ swap win-rate change   z σ from meta mean   "
+                 "opponent: unknown (avg)"
         )
 
         self._clear_body()
         self._render_team_section(parsed, suggestions)
+        # Inter-section divider — quieter than a second section heading
+        # appearing immediately after the team rows.  Generous vertical
+        # padding makes the two sections feel like distinct surfaces
+        # without needing borders.
+        tk.Frame(self.body, bg=DIVIDER, height=1).pack(fill="x", pady=(12, 14))
         self._render_bench_section(suggestions)
 
     def _render_team_section(self, parsed, suggestions) -> None:
         """Show all 5 blue-team champions; mark which one is the local player.
 
-        Teammates are dimmed — you can't swap them, they're context.  Your
-        own row gets the ⊙ marker, an accent color, and z-score so you can
-        compare your current strength to the bench candidates below.
+        Teammates are dimmed (you can't swap them, they're context).  Your
+        own row gets a gold name + ⊙ marker and the z-score so you can
+        compare current strength to bench candidates below.
         """
         own_z = next(
             (s.z_score for s in suggestions if s.source == "keep" and s.is_known),
@@ -234,115 +289,129 @@ class RecommenderApp:
         )
 
         section = tk.Frame(self.body, bg=BG)
-        section.pack(fill="x", pady=(0, 8))
+        section.pack(fill="x")
         tk.Label(
-            section, text="▼ Your team",
-            bg=BG, fg=DIM, anchor="w",
-            font=("Consolas", 9, "bold"),
-        ).pack(fill="x", pady=(0, 4))
+            section, text="YOUR TEAM",
+            bg=BG, fg=DIM, anchor="w", font=FONT_SECTION,
+        ).pack(fill="x", pady=(0, 6))
 
         for cid in parsed.my_team_ids:
             is_me = (cid == parsed.my_current_id)
             row = tk.Frame(section, bg=BG)
             row.pack(fill="x", pady=1)
 
-            self._icon_cell(row, cid)
+            self._icon_cell(row, cid, bg=BG)
 
             name = self.id_to_name.get(cid, f"#{cid}")
             if is_me:
-                z_str = f"z={own_z:+.2f}" if own_z is not None else ""
-                label = f"⊙ {name}  (you)  {z_str}".strip()
-                color = ACCENT
+                tk.Label(
+                    row, text=f"⊙ {name}", bg=BG, fg=GOLD,
+                    font=FONT_NAME_B, anchor="w",
+                ).grid(row=0, column=1, sticky="w", padx=(6, 0))
+                if own_z is not None:
+                    tk.Label(
+                        row, text=_fmt_signed_z(own_z), bg=BG, fg=GOLD,
+                        font=FONT_NUM, anchor="w",
+                    ).grid(row=0, column=2, sticky="w", padx=(12, 0))
             else:
-                label = f"  {name}"
-                color = DIM
-            tk.Label(
-                row, text=label, bg=BG, fg=color,
-                font=("Consolas", 10), anchor="w",
-            ).grid(row=0, column=1, sticky="w", padx=(2, 0))
+                tk.Label(
+                    row, text=name, bg=BG, fg=DIM,
+                    font=FONT_NAME, anchor="w",
+                ).grid(row=0, column=1, sticky="w", padx=(6, 0))
 
     def _render_bench_section(self, suggestions) -> None:
         """Show bench swap candidates with Δ% + z, sorted by Δ descending.
 
         The keep entry from `suggestions` is excluded — it's already shown
-        in the team section.  Star marks the best swap.
+        in the team section.  Best pick gets a full-row warm-tint background
+        (no side stripe — that's a hard ban) and a gold ★ marker; remaining
+        rows fall back to BG.
         """
         bench = [s for s in suggestions if s.source == "bench"]
 
         section = tk.Frame(self.body, bg=BG)
         section.pack(fill="x")
         tk.Label(
-            section, text=f"▼ Bench  ({len(bench)} options)",
-            bg=BG, fg=DIM, anchor="w",
-            font=("Consolas", 9, "bold"),
-        ).pack(fill="x", pady=(0, 4))
+            section, text=f"BENCH   {len(bench)} OPTIONS",
+            bg=BG, fg=DIM, anchor="w", font=FONT_SECTION,
+        ).pack(fill="x", pady=(0, 6))
 
-        # Column headers — columns: [icon] [Δ%] [z] [name].
+        # Column headers — columns: [icon] [Δ] [z] [name].  Widths picked
+        # so Consolas numerals line up across all rows.
         hdr = tk.Frame(section, bg=BG)
-        hdr.pack(fill="x", pady=(0, 2))
+        hdr.pack(fill="x", pady=(0, 4))
         tk.Label(hdr, text="", bg=BG, width=4).grid(row=0, column=0)
-        for col, text, width in [(1, "Δ%", 7), (2, "z", 6), (3, "champion", 16)]:
+        for col, text, width in [(1, "Δ", 7), (2, "z", 6), (3, "champion", 16)]:
             tk.Label(
                 hdr, text=text, bg=BG, fg=DIM,
-                font=("Consolas", 9, "bold"), width=width, anchor="w",
-            ).grid(row=0, column=col, sticky="w", padx=(2, 0))
+                font=FONT_SECTION, width=width, anchor="w",
+            ).grid(row=0, column=col, sticky="w", padx=(6, 0))
 
         # First known bench entry is the best swap (suggestions sorted desc by Δ).
         best_idx = next((i for i, s in enumerate(bench) if s.is_known), None)
 
         for i, s in enumerate(bench):
+            is_best = (i == best_idx)
+            row_bg = BEST_BG if is_best else BG
+
             name = self.id_to_name.get(s.champion_id, f"#{s.champion_id}")
-            row = tk.Frame(section, bg=BG)
-            row.pack(fill="x", pady=2)
-            self._icon_cell(row, s.champion_id)
+            row = tk.Frame(section, bg=row_bg)
+            row.pack(fill="x", pady=1, ipady=2)
+            self._icon_cell(row, s.champion_id, bg=row_bg)
 
             if not s.is_known:
-                self._cell(row, 1, " n/a", MUTED, 7)
-                self._cell(row, 2, " n/a", MUTED, 6)
-                self._cell(row, 3, f"{name}  (not in vocab)", MUTED, 18)
+                self._cell(row, 1, " n/a", MUTED, 7, bg=row_bg, font=FONT_NUM)
+                self._cell(row, 2, " n/a", MUTED, 6, bg=row_bg, font=FONT_NUM)
+                self._cell(row, 3, f"{name}  (not in vocab)",
+                           MUTED, 18, bg=row_bg, font=FONT_NAME)
                 continue
 
             delta_pp = s.delta * 100
-            delta_text = f"{delta_pp:+5.1f}%"
+            delta_text = _fmt_signed_pct(delta_pp)
             delta_color = GREEN if delta_pp > 0 else (RED if delta_pp < 0 else DIM)
-            marker = "★" if i == best_idx else " "
-            name_color = ACCENT if marker == "★" else FG
+            delta_font = FONT_NUM_B if is_best else FONT_NUM
 
-            z = s.z_score
-            z_text = f"{z:+.2f}"
-            z_color = GREEN if z > 0.5 else (RED if z < -0.5 else FG)
+            z_text = _fmt_signed_z(s.z_score)
+            z_color = GREEN if s.z_score > 0.5 else (RED if s.z_score < -0.5 else FG)
 
-            self._cell(row, 1, delta_text, delta_color, 7)
-            self._cell(row, 2, z_text, z_color, 6)
-            self._cell(row, 3, f"{marker} {name}", name_color, 18)
+            name_color = GOLD if is_best else FG
+            name_font = FONT_NAME_B if is_best else FONT_NAME
+            marker = "★ " if is_best else "   "
 
-    def _icon_cell(self, parent: tk.Frame, champion_id: int) -> None:
+            self._cell(row, 1, delta_text, delta_color, 7, bg=row_bg, font=delta_font)
+            self._cell(row, 2, z_text, z_color, 6, bg=row_bg, font=FONT_NUM)
+            self._cell(row, 3, f"{marker}{name}", name_color, 18, bg=row_bg, font=name_font)
+
+    def _icon_cell(self, parent: tk.Frame, champion_id: int, bg: str = BG) -> None:
         """Place the champion icon in column 0 of `parent`.
 
-        Falls back to a hollow placeholder Label of the same width if the
-        IconCache can't produce a PhotoImage — keeps row alignment stable
-        whether icons resolve or not.
+        bg matches the parent row's background so the icon's surrounding
+        pixels blend on tinted (best-pick) rows.  Falls back to a hollow
+        placeholder Label of the same width if the IconCache can't produce
+        a PhotoImage, so row alignment stays stable.
         """
         photo = self.icon_cache.get(champion_id) if self.icon_cache else None
         if photo is not None:
-            lbl = tk.Label(parent, image=photo, bg=BG, bd=0)
+            lbl = tk.Label(parent, image=photo, bg=bg, bd=0)
             # Hold the reference on the widget too — Tk doesn't keep it, and
-            # if the only reference is in IconCache._photos we're still safe,
-            # but the redundancy is cheap and removes a class of GC bugs.
+            # the redundancy is cheap and removes a class of GC bugs.
             lbl.image = photo  # type: ignore[attr-defined]
             lbl.grid(row=0, column=0, padx=(0, 6))
         else:
             tk.Label(
-                parent, text="", bg=BG, width=4, height=2,
+                parent, text="", bg=bg, width=4, height=2,
             ).grid(row=0, column=0, padx=(0, 6))
 
     @staticmethod
-    def _cell(parent: tk.Frame, col: int, text: str, fg: str, width: int) -> None:
-        # padx=(2,0) matches the header row so columns line up across frames.
+    def _cell(
+        parent: tk.Frame, col: int, text: str, fg: str, width: int,
+        bg: str = BG, font: tuple = FONT_NUM,
+    ) -> None:
+        # padx=(6,0) matches the header row so columns line up across frames.
         tk.Label(
-            parent, text=text, bg=BG, fg=fg,
-            font=("Consolas", 10), width=width, anchor="w",
-        ).grid(row=0, column=col, sticky="w", padx=(2, 0))
+            parent, text=text, bg=bg, fg=fg,
+            font=font, width=width, anchor="w",
+        ).grid(row=0, column=col, sticky="w", padx=(6, 0))
 
 
 # ---------- Entry point ----------
@@ -387,13 +456,17 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool) -> None:
             # Show the error in a window — easier to notice than a stderr message
             # that scrolls off when the user double-clicks the script.
             root = tk.Tk()
-            root.title("ARAM Recommender — error")
+            root.title("ARAM Recommender")
             root.configure(bg=BG)
             tk.Label(
-                root, text="League client not running.\n(No LCU credentials found.)\n\n"
-                           "Tip: pass --fake to demo the GUI without League.",
-                bg=BG, fg=RED, font=("Consolas", 11), padx=20, pady=20,
-            ).pack()
+                root, text="League client not running",
+                bg=BG, fg=RED, font=FONT_HEAD, padx=24, pady=(20, 4), anchor="w",
+            ).pack(fill="x")
+            tk.Label(
+                root, text="No LCU credentials found.\n\nTip: pass --fake to demo the GUI without League.",
+                bg=BG, fg=DIM, font=FONT_NAME, padx=24, pady=(0, 24),
+                anchor="w", justify="left",
+            ).pack(fill="x")
             root.mainloop()
             sys.exit(1)
         thread = threading.Thread(
