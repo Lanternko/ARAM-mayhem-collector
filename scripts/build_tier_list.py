@@ -1076,8 +1076,8 @@ def render_html(
 @click.option("--queue", "queue_id", type=int, default=2400, help="450=ARAM, 2400=Mayhem")
 @click.option("--patch-prefix", default="16.10", help='e.g. "16.10" or "" for all patches')
 @click.option("--ddragon-version", default=None, help="Override Data Dragon version (default: latest)")
-@click.option("--out", "out_path", type=click.Path(path_type=Path), default=Path("site/index.html"),
-              help="Output HTML path (default: site/index.html for GitHub Pages drop-in)")
+@click.option("--out", "out_path", type=click.Path(path_type=Path), default=Path("docs/index.html"),
+              help="Output HTML path (default: docs/index.html — the only non-root folder GitHub Pages serves from)")
 @click.option("--min-games", type=int, default=50, help="Drop champions below this game count")
 @click.option("--min-pair-games", type=int, default=15, help="Min games per (champ, augment) pair")
 @click.option("--top-n", type=int, default=5)
