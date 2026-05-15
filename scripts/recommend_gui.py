@@ -206,18 +206,27 @@ class RecommenderApp:
     def _render(self, parsed, suggestions) -> None:
         cur_name = self.id_to_name.get(parsed.my_current_id, f"#{parsed.my_current_id}")
         self.header.config(text=f"Cell {parsed.my_cell_id}   Current: {cur_name}", fg=FG)
-        self.subheader.config(text="P(win) assumes average opponent")
+        # z = (coef - mean) / std over all champions in this model.  At |z|=1
+        # you're roughly top/bottom 16%; |z|=2 is top/bottom 2.5%.
+        self.subheader.config(text="z = champion strength (σ from meta mean)")
 
         self._clear_body()
 
         # Column headers
         hdr = tk.Frame(self.body, bg=BG)
         hdr.pack(fill="x", pady=(0, 4))
-        for col, text, width in [(0, "Δ%", 8), (1, "P(win)", 8), (2, "champion", 18)]:
+        for col, text, width in [(0, "Δ%", 8), (1, "z", 7), (2, "champion", 18)]:
             tk.Label(
                 hdr, text=text, bg=BG, fg=DIM,
                 font=("Consolas", 9, "bold"), width=width, anchor="w",
             ).grid(row=0, column=col, sticky="w")
+
+        # Best non-keep suggestion gets the ★.  Computed once outside the loop
+        # so we don't re-scan the list for every row.
+        first_non_keep = next(
+            (idx for idx, sg in enumerate(suggestions)
+             if sg.source != "keep" and sg.is_known), None,
+        )
 
         for i, s in enumerate(suggestions):
             name = self.id_to_name.get(s.champion_id, f"#{s.champion_id}")
@@ -226,10 +235,11 @@ class RecommenderApp:
 
             if not s.is_known:
                 self._cell(row, 0, " n/a", MUTED, 8)
-                self._cell(row, 1, " n/a", MUTED, 8)
+                self._cell(row, 1, " n/a", MUTED, 7)
                 self._cell(row, 2, f"{name}  (not in vocab)", MUTED, 18)
                 continue
 
+            # Column 0: Δ% (change in P(win) from keeping current).
             if s.source == "keep":
                 delta_text = "  ——"
                 delta_color = DIM
@@ -239,16 +249,16 @@ class RecommenderApp:
                 delta_pp = s.delta * 100
                 delta_text = f"{delta_pp:+5.1f}%"
                 delta_color = GREEN if delta_pp > 0 else (RED if delta_pp < 0 else DIM)
-                # Best non-keep suggestion gets the star.
-                first_non_keep = next(
-                    (idx for idx, sg in enumerate(suggestions)
-                     if sg.source != "keep" and sg.is_known), None,
-                )
                 marker = "★" if i == first_non_keep else " "
                 name_color = ACCENT if marker == "★" else FG
 
+            # Column 1: absolute z-score of this champion in the meta.
+            z = s.z_score
+            z_text = f"{z:+.2f}"
+            z_color = GREEN if z > 0.5 else (RED if z < -0.5 else FG)
+
             self._cell(row, 0, delta_text, delta_color, 8)
-            self._cell(row, 1, f"{s.win_prob * 100:5.1f}%", FG, 8)
+            self._cell(row, 1, z_text, z_color, 7)
             self._cell(row, 2, f"{marker} {name}", name_color, 18)
 
     @staticmethod
@@ -307,6 +317,9 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool) -> None:
             args=(stop_event, q, model, creds, poll_interval),
             daemon=True,
         )
+
+    thread.start()  # crucial — without this, the poll loop never runs and
+                    # the GUI stays on its placeholder "Loading..." header forever.
 
     root = tk.Tk()
     RecommenderApp(root, q)

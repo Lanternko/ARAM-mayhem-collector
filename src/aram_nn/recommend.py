@@ -40,11 +40,24 @@ class LRModel:
     on Python 3.13 (scipy.spatial.distance fails inside @dataclass
     construction with MemoryError) and even when it succeeds it adds 30+s
     of cold-start latency.
+
+    coef_mean / coef_std are precomputed so the recommender can show each
+    champion's strength as a z-score in the current meta — much more
+    intuitive than P(win) for a 51-55% base-rate game where absolute
+    probabilities all look similar.
     """
     coef: np.ndarray             # shape (n_champs,)
     intercept: float
     champ_to_idx: dict[int, int]
     n_champs: int
+    coef_mean: float = 0.0
+    coef_std: float = 1.0
+
+    def z_score(self, champ_idx: int) -> float:
+        """Standardized champion strength: (w - mean(w)) / std(w)."""
+        if self.coef_std <= 1e-12:
+            return 0.0
+        return float((self.coef[champ_idx] - self.coef_mean) / self.coef_std)
 
 
 def _sigmoid(x: float | np.ndarray) -> float | np.ndarray:
@@ -163,6 +176,8 @@ def load_lr(lr_path: Path, vocab_source: Path) -> LRModel:
     return LRModel(
         coef=coef, intercept=intercept,
         champ_to_idx=champ_to_idx, n_champs=len(champ_to_idx),
+        coef_mean=float(coef.mean()),
+        coef_std=float(coef.std()),
     )
 
 
@@ -204,6 +219,9 @@ class Suggestion:
     source: str            # "keep" or "bench"
     win_prob: float        # absolute P(blue wins) under "average opponent"
     delta: float           # win_prob - baseline (positive = better than keeping current)
+    z_score: float         # standardized champion strength in the current meta:
+                           #   (coef[champ] - mean(coef)) / std(coef)
+                           # ~ +1 means roughly top 16%, ~ +2 means top 2.5%.
     is_known: bool         # False if championId is outside training vocab
 
 
@@ -243,7 +261,8 @@ def suggest_for_cell(
         if idx is None:
             out.append(Suggestion(
                 champion_id=int(cid), source=source,
-                win_prob=float("nan"), delta=float("nan"), is_known=False,
+                win_prob=float("nan"), delta=float("nan"),
+                z_score=float("nan"), is_known=False,
             ))
             continue
 
@@ -251,7 +270,8 @@ def suggest_for_cell(
         prob = predict_blue_prob(swapped, model)
         out.append(Suggestion(
             champion_id=int(cid), source=source,
-            win_prob=prob, delta=prob - baseline, is_known=True,
+            win_prob=prob, delta=prob - baseline,
+            z_score=model.z_score(idx), is_known=True,
         ))
 
     out.sort(key=lambda s: (not s.is_known, -s.delta if s.is_known else 0.0))
