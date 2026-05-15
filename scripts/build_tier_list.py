@@ -860,12 +860,17 @@ def render_html(
     parts.extend(meta_lines)
     parts.append(f"<style>{css}</style></head><body>")
     parts.append(f"<h1>{header_title}</h1>")
+    # Subtitle kept terse on both desktop and mobile — patch + freshness +
+    # sample size + tap hint, nothing else.  Method details (Bayesian
+    # smoothing, Data Dragon version, queueId) are still in OG meta and in
+    # the footer for anyone who cares.
+    short_patch = f"patch {patch_prefix}" if patch_prefix else "全 patch"
+    date_str = f"更新於 {build_date}" if build_date else "日期未標"
     parts.append(
-        f"<div class='subtitle'>{queue_label} · {patch_label} · "
-        f"{total_games:,} games · Bayesian smoothing (prior 50%, k=200) · "
-        f"Data Dragon v{ddragon_version}"
-        + (f" · 更新於 {build_date}" if build_date else "")
-        + " · 點擊英雄展開最佳 / 最差 augment</div>"
+        f"<div class='subtitle'>"
+        f"{short_patch} · {date_str} ({total_games:,} games) · "
+        "點擊英雄展開 augment"
+        f"</div>"
     )
 
     for tier in TIER_ORDER:
