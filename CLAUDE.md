@@ -2,8 +2,11 @@
 # aram-winrate-nn — ARAM 英雄組合勝率預測 NN，Python / PyTorch
 
 ## Why
-輸入一場 League of Legends ARAM (queueId=450) 的雙方英雄組合 (5v5)，輸出藍方獲勝機率。
-目標是驗證「提供英雄組合資訊後，模型準確率能否超過藍方 base rate (~51%)」。
+輸入一場 League of Legends Mayhem (queueId=2400) 或 ARAM (450) 的雙方英雄組合 (5v5)，輸出藍方獲勝機率。
+目標是驗證「提供英雄組合資訊後，模型準確率能否超過藍方 base rate (~51%)」— 已達成。
+
+**主資料源是 Mayhem (queueId=2400)**，30k+ 場；ARAM (450) 因 Riot 公開 API 不限制曾收 ~7k 場但已棄。
+Repo 名留 `aram-winrate-nn` 是歷史包袱，**所有訓練 / tier list / 推薦都該預設 Mayhem**。`train.py` / `train_tier2.py` / `tier_list.py` queue-agnostic — 吃任何符合 schema 的 parquet，不檢查 queue。
 
 ## Architecture
 - **Python 3.13**, PyTorch 2.11, polars, scikit-learn, httpx, psutil, click
