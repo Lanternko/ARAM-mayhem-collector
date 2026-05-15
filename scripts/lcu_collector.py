@@ -43,11 +43,35 @@ from urllib.parse import unquote
 
 import click
 import httpx
-import polars as pl
 try:
     import psutil
 except Exception:  # pragma: no cover - optional dependency in local runtime
     psutil = None
+
+
+class _LazyPolars:
+    """Defer polars import until first attribute access.
+
+    polars is a heavy native library (~10-20 MB DLLs); on Windows post-reboot,
+    Defender's first-load DLL scan can stall the import for minutes and freeze
+    every subcommand that imports this module — including `auto-collect`,
+    `status`, `--help`, etc. that don't actually use polars at all.
+
+    Type annotations like `pl.DataType` keep working because `from __future__
+    import annotations` (above) makes all annotations lazy strings, so they're
+    never evaluated at class/function definition time.
+    """
+
+    _module = None
+
+    def __getattr__(self, name: str):
+        if self._module is None:
+            import polars as _polars  # type: ignore[import-not-found]
+            object.__setattr__(self, "_module", _polars)
+        return getattr(self._module, name)
+
+
+pl = _LazyPolars()
 
 
 DEFAULT_DB = Path("data/lcu/games.db")
