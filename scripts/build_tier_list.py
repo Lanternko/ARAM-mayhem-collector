@@ -84,6 +84,7 @@ def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
         by_id[int(entry["key"])] = {
             "name": entry["name"],
             "alias": entry["id"],
+            "tags": entry.get("tags") or [],
             "image": f"https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{entry['id']}.png",
         }
     return version, by_id
@@ -429,6 +430,8 @@ def render_html(
             bot_buckets[rarity] = [_pack(r) for r in bot_rows]
         js_champs[str(cid)] = {
             "name": meta["name"],
+            "alias": meta.get("alias", ""),
+            "tags": meta.get("tags") or [],
             "top": top_buckets,
             "bot": bot_buckets,
         }
@@ -454,33 +457,136 @@ def render_html(
         padding: 32px 24px 64px;
     }
     h1 { margin: 0 0 4px; font-weight: 600; font-size: 22px; }
-    .subtitle { color: #9aa0a6; font-size: 13px; margin-bottom: 24px; }
-    .tier-block { margin-bottom: 18px; }
-    .tier-row {
-        display: grid;
-        grid-template-columns: 88px 1fr;
+    .subtitle { color: #9aa0a6; font-size: 13px; }
+    /* Top header row — title on the left, GitHub star CTA on the right. */
+    .page-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
         gap: 16px;
-        padding: 12px;
+        margin-bottom: 16px;
+    }
+    .gh-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: #21262d;
+        color: #c9d1d9;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        text-decoration: none;
+        white-space: nowrap;
+        transition: background 0.12s, border-color 0.12s;
+    }
+    .gh-star:hover { background: #30363d; border-color: #58606b; }
+    .gh-star svg { flex-shrink: 0; }
+    /* Filter bar: role chips + free-text search + live count. */
+    .filter-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin: 0 0 20px;
+        padding: 10px 12px;
         background: #161a22;
         border-radius: 10px;
     }
-    .tier-label {
-        position: relative;
-        overflow: hidden;
+    .role-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+        padding: 5px 12px;
+        background: #1f2530;
+        color: #c5cad3;
+        border: 1px solid transparent;
+        border-radius: 18px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.1s;
+    }
+    .chip:hover { background: #2a3142; }
+    .chip.active {
+        background: var(--role-color, #f5c518);
+        color: #0e1116;
+        border-color: var(--role-color, #f5c518);
+    }
+    .chip[data-role=""]              { --role-color: #f5c518; }
+    .chip[data-role="Assassin"]      { --role-color: #ef4444; }
+    .chip[data-role="Fighter"]       { --role-color: #f97316; }
+    .chip[data-role="Mage"]          { --role-color: #3b82f6; }
+    .chip[data-role="Marksman"]      { --role-color: #22c55e; }
+    .chip[data-role="Support"]       { --role-color: #ec4899; }
+    .chip[data-role="Tank"]          { --role-color: #a855f7; }
+    .chip-reset {
+        margin-left: 4px;
+        padding: 5px 10px;
+        background: transparent;
+        color: #9aa0a6;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+        font-family: inherit;
+    }
+    .chip-reset:hover { color: #e6e8eb; border-color: #58606b; }
+    .filter-tools {
         display: flex;
         align-items: center;
+        gap: 10px;
+        margin-left: auto;
+        flex: 1;
+        justify-content: flex-end;
+    }
+    .search {
+        flex: 1;
+        max-width: 280px;
+        min-width: 160px;
+        padding: 6px 12px;
+        background: #0e1116;
+        color: #e6e8eb;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font-size: 13px;
+        font-family: inherit;
+        outline: none;
+    }
+    .search:focus { border-color: #58606b; }
+    .shown-count { color: #9aa0a6; font-size: 12px; white-space: nowrap; }
+    .tier-block { margin-bottom: 14px; }
+    .tier-block.hidden { display: none; }
+    /* Tier name on its own line above the grid (replaces the old left-side
+       full-height ornament bar). */
+    .tier-heading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 8px 0;
+        font-size: 14px;
+        font-weight: 600;
+    }
+    .tier-pill {
+        position: relative;
+        overflow: hidden;
+        display: inline-flex;
+        align-items: center;
         justify-content: center;
-        font-size: 28px;
-        font-weight: 700;
+        padding: 4px 16px;
+        border-radius: 6px;
         color: #0e1116;
         background: var(--tier-bg);
-        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 700;
         text-shadow: 0 1px 0 rgba(255,255,255,0.25);
+        letter-spacing: 0.3px;
     }
-    .tier-label > span { position: relative; z-index: 2; }
+    .tier-pill > span { position: relative; z-index: 2; }
+    .tier-count { color: #9aa0a6; font-size: 12px; font-weight: 400; }
     /* Prismatic / pearl shine for the OP tier — animated highlight sweep +
        outer halo glow, matching the iridescent augment-card look. */
-    .tier-block[data-tier="OP"] .tier-label {
+    .tier-block[data-tier="OP"] .tier-pill {
         background-size: 200% 200%;
         animation: prismShift 6s ease-in-out infinite;
         box-shadow:
@@ -490,7 +596,7 @@ def render_html(
         color: #2a1a4a;
         text-shadow: 0 1px 0 rgba(255,255,255,0.8);
     }
-    .tier-block[data-tier="OP"] .tier-label::before {
+    .tier-block[data-tier="OP"] .tier-pill::before {
         content: "";
         position: absolute;
         inset: 0;
@@ -558,6 +664,7 @@ def render_html(
             0 0 6px rgba(220,180,255,0.55),
             inset 0 0 0 1px rgba(255,255,255,0.55);
     }
+    .champ.hidden { display: none; }
     .champ .wr {
         position: absolute;
         left: 2px;
@@ -772,26 +879,29 @@ def render_html(
         body { padding: 18px 10px 40px; }
         h1 { font-size: 18px; }
         .subtitle { font-size: 12px; }
-        /* Drop the 2-column (label | grid) layout on mobile.  The tall tier
-           ornament was bleeding past the champion row and into the detail
-           panel, wasting horizontal space.  Stack the tier label as a small
-           pill on top instead. */
-        .tier-row { display: block; padding: 6px 8px 8px; }
-        .tier-label {
-            display: inline-flex;
-            width: auto;
-            height: auto;
-            padding: 3px 12px;
-            font-size: 14px;
-            border-radius: 5px;
-            margin: 2px 0 6px;
+        /* Header stacks: title row, then GitHub button below at full width. */
+        .page-header { flex-direction: column; gap: 8px; margin-bottom: 12px; }
+        .gh-star { align-self: flex-start; }
+        /* Filter bar wraps tighter; search input becomes full-width on
+           its own row. */
+        .filter-bar { padding: 8px; gap: 8px; }
+        .role-chips { gap: 4px; }
+        .chip { padding: 4px 10px; font-size: 11px; }
+        .filter-tools {
+            margin-left: 0;
+            width: 100%;
+            justify-content: space-between;
         }
-        .tier-label > span { line-height: 1.3; }
+        .search { max-width: none; min-width: 0; }
+        /* Tier heading slimmer; pill stays inline. */
+        .tier-heading { margin: 6px 0; gap: 6px; }
+        .tier-pill { padding: 3px 12px; font-size: 14px; }
+        .tier-count { font-size: 11px; }
         /* Lock to 6 champions per row on mobile (instead of auto-fill which
            packs 7-8 in and makes icons tiny). */
         .tier-grid { grid-template-columns: repeat(6, 1fr); gap: 5px; }
         /* OP / T1 / ... badges on champion thumbnails are noisy on mobile;
-           the tier is already implied by the small pill above the row. */
+           the tier is already implied by the pill above the row. */
         .champ .badge { display: none; }
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
@@ -859,19 +969,71 @@ def render_html(
     parts.append("<!doctype html><html lang='zh-Hant'><head>")
     parts.extend(meta_lines)
     parts.append(f"<style>{css}</style></head><body>")
-    parts.append(f"<h1>{header_title}</h1>")
-    # Subtitle kept terse on both desktop and mobile — patch + freshness +
-    # sample size + tap hint, nothing else.  Method details (Bayesian
-    # smoothing, Data Dragon version, queueId) are still in OG meta and in
-    # the footer for anyone who cares.
+    # Header: title + subtitle on the left, "Star on GitHub" CTA on the right.
+    # The repo name is the canonical project URL; if the user later forks /
+    # renames, update REPO_URL below.
+    REPO_URL = "https://github.com/Lanternko/ARAM-Mayhem-Database"
     short_patch = f"patch {patch_prefix}" if patch_prefix else "全 patch"
     date_str = f"更新於 {build_date}" if build_date else "日期未標"
+    gh_icon = (
+        "<svg viewBox='0 0 16 16' width='14' height='14' fill='currentColor' "
+        "aria-hidden='true'><path d='M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1"
+        "-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1."
+        "23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-."
+        "2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0"
+        "-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12"
+        "-.51.56-.82 1.27-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-"
+        ".51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.2"
+        "7.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.0"
+        "1 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8"
+        "Z'></path></svg>"
+    )
+    parts.append("<div class='page-header'>")
+    parts.append("<div>")
+    parts.append(f"<h1>{header_title}</h1>")
     parts.append(
         f"<div class='subtitle'>"
         f"{short_patch} · {date_str} ({total_games:,} games) · "
         "點擊英雄展開 augment"
         f"</div>"
     )
+    parts.append("</div>")
+    parts.append(
+        f"<a class='gh-star' href='{REPO_URL}' target='_blank' rel='noopener' "
+        f"title='覺得有用請幫忙按 Star ⭐'>"
+        f"{gh_icon} ⭐ Star on GitHub"
+        f"</a>"
+    )
+    parts.append("</div>")  # /page-header
+
+    # Filter bar: role chips + free-text search + live "N shown" counter.
+    parts.append("<div class='filter-bar'>")
+    parts.append("<div class='role-chips'>")
+    parts.append('<button class="chip active" data-role="">★ All</button>')
+    for role_en, role_zh in [
+        ("Assassin", "刺客"),
+        ("Fighter", "戰士"),
+        ("Mage", "法師"),
+        ("Marksman", "射手"),
+        ("Support", "輔助"),
+        ("Tank", "坦克"),
+    ]:
+        parts.append(
+            f'<button class="chip" data-role="{role_en}">{role_zh}</button>'
+        )
+    parts.append('<button class="chip-reset" id="reset-filters">重設</button>')
+    parts.append("</div>")  # /role-chips
+    parts.append("<div class='filter-tools'>")
+    parts.append(
+        '<input class="search" id="champ-search" type="search" '
+        'placeholder="搜尋英雄（中 / 英 / 角色）…" autocomplete="off" '
+        'aria-label="搜尋英雄">'
+    )
+    parts.append(
+        f'<span class="shown-count"><span id="shown-n">{len(records)}</span> 隻顯示</span>'
+    )
+    parts.append("</div>")  # /filter-tools
+    parts.append("</div>")  # /filter-bar
 
     for tier in TIER_ORDER:
         entries = by_tier[tier]
@@ -884,17 +1046,32 @@ def render_html(
             f"<div class='tier-block' data-tier='{tier}' "
             f"style='--tier-color:{color}; --tier-bg:{bg};'>"
         )
-        parts.append("<div class='tier-row'>")
-        parts.append(f"<div class='tier-label'><span>{tier}</span></div>")
+        # New layout: tier name on its own heading row (no side bar), grid
+        # takes the full row below.  Same look on desktop + mobile.
+        parts.append("<h2 class='tier-heading'>")
+        parts.append(f"<span class='tier-pill'><span>{tier}</span></span>")
+        parts.append(
+            f"<span class='tier-count'>"
+            f"<span class='tier-count-num' data-tier='{tier}'>{len(entries)}</span>"
+            " 隻"
+            "</span>"
+        )
+        parts.append("</h2>")
         parts.append("<div class='tier-grid'>")
         for r in entries:
             wr_pct = f"{r['bayes_wr'] * 100:.1f}%"
+            meta = champ_meta.get(r["champion_id"], {})
+            tag_str = " ".join(meta.get("tags") or [])
+            alias = meta.get("alias", "")
+            search_blob = f"{r['name']} {alias} {tag_str}".lower()
             title = (
                 f"{r['name']} · WR {wr_pct} · games {r['games']:,} · "
                 f"raw {r['raw_wr']*100:.1f}%"
             )
             parts.append(
-                f"<div class='champ' data-cid='{r['champion_id']}' title=\"{title}\">"
+                f"<div class='champ' data-cid='{r['champion_id']}' "
+                f"data-tags='{tag_str}' data-search=\"{search_blob}\" "
+                f"title=\"{title}\">"
                 f"<img loading='lazy' src='{r['image']}' alt='{r['name']}'>"
                 f"<span class='badge'>{tier}</span>"
                 f"<span class='wr'>{wr_pct}</span>"
@@ -904,7 +1081,7 @@ def render_html(
         # Detail host lives INSIDE .tier-grid so it can grid-span all columns
         # and be inserted right after the clicked champion's visual row.
         parts.append(f"<div class='detail-host' data-tier='{tier}'></div>")
-        parts.append("</div></div>")  # /tier-grid /tier-row
+        parts.append("</div>")  # /tier-grid
         parts.append("</div>")  # /tier-block
 
     parts.append("<div class='footer'>")
@@ -1069,6 +1246,82 @@ def render_html(
             if (anchor.nextSibling !== host) anchor.after(host);
         }, 120);
     });
+
+    /* -----  Filter / search  --------------------------------------- */
+
+    const filterState = { role: '', q: '' };
+
+    function applyFilters() {
+        const role = filterState.role;
+        const q = filterState.q.trim().toLowerCase();
+        let shown = 0;
+        document.querySelectorAll('.tier-block').forEach(block => {
+            let tierShown = 0;
+            const champs = block.querySelectorAll(':scope > .tier-grid > .champ');
+            champs.forEach(c => {
+                const tags = (c.getAttribute('data-tags') || '').split(' ');
+                const blob = c.getAttribute('data-search') || '';
+                const matchRole = !role || tags.includes(role);
+                const matchQ = !q || blob.includes(q);
+                const hide = !(matchRole && matchQ);
+                c.classList.toggle('hidden', hide);
+                if (!hide) tierShown++;
+            });
+            // Update tier count number
+            const tier = block.getAttribute('data-tier');
+            const numEl = block.querySelector(`.tier-count-num[data-tier="${tier}"]`);
+            if (numEl) numEl.textContent = tierShown;
+            // Hide whole tier-block when empty
+            block.classList.toggle('hidden', tierShown === 0);
+            shown += tierShown;
+        });
+        const shownN = document.getElementById('shown-n');
+        if (shownN) shownN.textContent = shown;
+
+        // If the currently-selected champ got hidden, close its detail panel.
+        if (selected) {
+            const sel = document.querySelector(`.champ[data-cid="${selected}"].selected`);
+            if (!sel || sel.classList.contains('hidden')) {
+                document.querySelectorAll('.detail-host').forEach(h => h.innerHTML = '');
+                document.querySelectorAll('.champ.selected').forEach(el => el.classList.remove('selected'));
+                selected = null;
+            }
+        }
+    }
+
+    function setActiveChip(role) {
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.classList.toggle('active', chip.getAttribute('data-role') === role);
+        });
+    }
+
+    // Role chip clicks (event delegation).
+    document.addEventListener('click', (ev) => {
+        const chip = ev.target.closest('.chip');
+        if (chip) {
+            filterState.role = chip.getAttribute('data-role') || '';
+            setActiveChip(filterState.role);
+            applyFilters();
+            return;
+        }
+        if (ev.target.id === 'reset-filters') {
+            filterState.role = '';
+            filterState.q = '';
+            setActiveChip('');
+            const s = document.getElementById('champ-search');
+            if (s) s.value = '';
+            applyFilters();
+        }
+    });
+
+    // Live search.
+    const searchEl = document.getElementById('champ-search');
+    if (searchEl) {
+        searchEl.addEventListener('input', () => {
+            filterState.q = searchEl.value || '';
+            applyFilters();
+        });
+    }
     """
     js = js.replace("__PAYLOAD__", payload_json)
     parts.append(f"<script>{js}</script>")
