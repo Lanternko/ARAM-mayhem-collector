@@ -492,16 +492,23 @@ def render_html(
         margin: 0;
         background: #0e1116;
         color: #e6e8eb;
-        /* Noto Serif TC = Google's traditional Chinese mincho (Source Han
-           Serif TW base), ships paired Latin glyphs.  Gives the site a
-           classical-text feel.  System mincho fallbacks (PMingLiU, Songti
-           TC) cover the first paint before the webfont lands. */
-        font-family: "Noto Serif TC", "Source Han Serif TC",
-                     "PingFang TC", "PMingLiU", "Songti TC",
-                     "Microsoft JhengHei", serif;
+        /* Body = Noto Sans TC (modern sans, readable in dense UI).  Serif
+           is reserved for small captions — see `.subtitle`, `.cmeta`,
+           `.aug .alift`. */
+        font-family: "Noto Sans TC", -apple-system, "Segoe UI",
+                     "Microsoft JhengHei", "PingFang TC", sans-serif;
         padding: 32px 24px 64px;
     }
     h1 { margin: 0 0 4px; font-weight: 600; font-size: 22px; }
+    /* Mincho-only captions — opt-in serif for the three small metadata
+       lines the user picked out: page subtitle, detail-panel sub-heading,
+       and augment card's lift/games row. */
+    .subtitle,
+    .detail-head .cmeta,
+    .aug .alift {
+        font-family: "Noto Serif TC", "Source Han Serif TC",
+                     "PingFang TC", "PMingLiU", "Songti TC", serif;
+    }
     .subtitle { color: #9aa0a6; font-size: 13px; }
     /* Top header row — title on the left, GitHub star CTA on the right. */
     .page-header {
@@ -1013,16 +1020,18 @@ def render_html(
     parts: list[str] = []
     parts.append("<!doctype html><html lang='zh-Hant'><head>")
     parts.extend(meta_lines)
-    # Webfont: Noto Serif TC (Source Han Serif TW base) for zh-Hant + Latin
-    # body text.  `display=swap` lets system fallback paint immediately;
-    # Noto swaps in once downloaded.  Only the four weights we actually use
-    # are requested (400 body, 500 chip, 600 heading, 700 pill/badge).
+    # Webfonts: Noto Sans TC for everything by default; Noto Serif TC only
+    # for a couple of small captions (subtitle, panel meta, augment lift)
+    # where the mincho gives a "footnote" feel without hurting legibility.
+    # `display=swap` lets system fallback paint immediately; weights pruned
+    # to what each face actually uses on the page.
     parts.append(
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link href='https://fonts.googleapis.com/css2"
-        "?family=Noto+Serif+TC:wght@400;500;600;700&display=swap' "
-        "rel='stylesheet'>"
+        "?family=Noto+Sans+TC:wght@400;500;600;700"
+        "&family=Noto+Serif+TC:wght@400;500"
+        "&display=swap' rel='stylesheet'>"
     )
     parts.append(f"<style>{css}</style></head><body>")
     # Header: title + subtitle on the left, "Star on GitHub" CTA on the right.
