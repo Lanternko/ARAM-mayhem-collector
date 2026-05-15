@@ -732,26 +732,6 @@ def render_html(
         object-fit: cover;
         display: block;
     }
-    .champ .badge {
-        position: absolute;
-        top: 2px;
-        right: 2px;
-        font-size: 10px;
-        font-weight: 700;
-        padding: 2px 5px;
-        border-radius: 4px;
-        color: #0e1116;
-        background: var(--tier-bg);
-        box-shadow: 0 1px 2px rgba(0,0,0,0.4);
-        letter-spacing: 0.3px;
-    }
-    .tier-block[data-tier="OP"] .champ .badge {
-        color: #2a1a4a;
-        text-shadow: 0 1px 0 rgba(255,255,255,0.55);
-        box-shadow:
-            0 0 6px rgba(220,180,255,0.55),
-            inset 0 0 0 1px rgba(255,255,255,0.55);
-    }
     .champ.hidden { display: none; }
     .champ .wr {
         position: absolute;
@@ -1000,9 +980,6 @@ def render_html(
         /* Lock to 6 champions per row on mobile (instead of auto-fill which
            packs 7-8 in and makes icons tiny). */
         .tier-grid { grid-template-columns: repeat(6, 1fr); gap: 5px; }
-        /* OP / T1 / ... badges on champion thumbnails are noisy on mobile;
-           the tier is already implied by the pill above the row. */
-        .champ .badge { display: none; }
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
            space.  Each augment card still has a rarity-coloured border, so
@@ -1189,7 +1166,6 @@ def render_html(
                 # Ctrl+F / Cmd+F can find e.g. "Aatrox" even though only the
                 # zh-TW name is drawn.
                 f"<span class='sr-only'>{alias}</span>"
-                f"<span class='badge'>{tier}</span>"
                 f"<span class='wr'>{wr_pct}</span>"
                 f"<span class='name'>{r['name']}</span>"
                 f"</div>"
