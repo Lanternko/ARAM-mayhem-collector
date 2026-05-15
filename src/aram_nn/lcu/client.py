@@ -149,6 +149,21 @@ def get_gameflow_session(client: LCUClient) -> dict | None:
     return client.get("/lol-gameflow/v1/session")
 
 
+def get_champ_select_session(client: LCUClient) -> dict | None:
+    """Return the current champ-select session payload, or None outside ChampSelect.
+
+    Useful keys (subject to client version):
+      localPlayerCellId : int  — which cell the local summoner occupies
+      myTeam[]          : list of dict with cellId / championId / puuid / summonerId
+      theirTeam[]       : opponent cells; in ARAM these are typically present but with
+                          championId=0 because the opposing team is hidden until game start
+      benchEnabled      : bool — true in ARAM, false in standard SR draft
+      benchChampions[]  : list of {championId} currently sitting on the reroll bench
+      actions[][]       : pick/ban action groups
+    """
+    return client.get("/lol-champ-select/v1/session")
+
+
 def get_league_ladders(client: LCUClient, puuid: str) -> list[dict]:
     """Return ranked ladder slices around the given puuid."""
     data = client.get(f"/lol-ranked/v1/league-ladders/{puuid}")
