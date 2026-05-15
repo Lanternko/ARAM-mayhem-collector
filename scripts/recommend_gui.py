@@ -145,11 +145,11 @@ class RecommenderApp:
         root.title("ARAM Recommender")
         root.attributes("-topmost", True)
         root.attributes("-alpha", 0.93)
-        # Wider + taller than v1: icons add ~40px width per row, and bench
-        # can now have up to 10 champions (11 rows incl. keep).
-        root.geometry("420x560+40+40")
+        # Sized for: header + subheader + "your team" section (5 rows) +
+        # "bench" section (header + up to 10 rows).  Resizable downward.
+        root.geometry("420x660+40+40")
         root.configure(bg=BG)
-        root.minsize(380, 240)
+        root.minsize(380, 280)
 
         # Tk widget constructors only accept a single int for padx/pady
         # (internal padding).  Asymmetric padding goes on the geometry
@@ -212,18 +212,74 @@ class RecommenderApp:
             w.destroy()
 
     def _render(self, parsed, suggestions) -> None:
-        cur_name = self.id_to_name.get(parsed.my_current_id, f"#{parsed.my_current_id}")
-        self.header.config(text=f"Cell {parsed.my_cell_id}   Current: {cur_name}", fg=FG)
-        # z = (coef - mean) / std over all champions in this model.  At |z|=1
-        # you're roughly top/bottom 16%; |z|=2 is top/bottom 2.5%.
-        self.subheader.config(text="z = champion strength (σ from meta mean)")
+        self.header.config(text=f"Cell {parsed.my_cell_id}  •  Average opponent", fg=FG)
+        self.subheader.config(
+            text="Δ% = swap-to win-rate change   z = champion strength (σ)"
+        )
 
         self._clear_body()
+        self._render_team_section(parsed, suggestions)
+        self._render_bench_section(suggestions)
+
+    def _render_team_section(self, parsed, suggestions) -> None:
+        """Show all 5 blue-team champions; mark which one is the local player.
+
+        Teammates are dimmed — you can't swap them, they're context.  Your
+        own row gets the ⊙ marker, an accent color, and z-score so you can
+        compare your current strength to the bench candidates below.
+        """
+        own_z = next(
+            (s.z_score for s in suggestions if s.source == "keep" and s.is_known),
+            None,
+        )
+
+        section = tk.Frame(self.body, bg=BG)
+        section.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            section, text="▼ Your team",
+            bg=BG, fg=DIM, anchor="w",
+            font=("Consolas", 9, "bold"),
+        ).pack(fill="x", pady=(0, 4))
+
+        for cid in parsed.my_team_ids:
+            is_me = (cid == parsed.my_current_id)
+            row = tk.Frame(section, bg=BG)
+            row.pack(fill="x", pady=1)
+
+            self._icon_cell(row, cid)
+
+            name = self.id_to_name.get(cid, f"#{cid}")
+            if is_me:
+                z_str = f"z={own_z:+.2f}" if own_z is not None else ""
+                label = f"⊙ {name}  (you)  {z_str}".strip()
+                color = ACCENT
+            else:
+                label = f"  {name}"
+                color = DIM
+            tk.Label(
+                row, text=label, bg=BG, fg=color,
+                font=("Consolas", 10), anchor="w",
+            ).grid(row=0, column=1, sticky="w", padx=(2, 0))
+
+    def _render_bench_section(self, suggestions) -> None:
+        """Show bench swap candidates with Δ% + z, sorted by Δ descending.
+
+        The keep entry from `suggestions` is excluded — it's already shown
+        in the team section.  Star marks the best swap.
+        """
+        bench = [s for s in suggestions if s.source == "bench"]
+
+        section = tk.Frame(self.body, bg=BG)
+        section.pack(fill="x")
+        tk.Label(
+            section, text=f"▼ Bench  ({len(bench)} options)",
+            bg=BG, fg=DIM, anchor="w",
+            font=("Consolas", 9, "bold"),
+        ).pack(fill="x", pady=(0, 4))
 
         # Column headers — columns: [icon] [Δ%] [z] [name].
-        hdr = tk.Frame(self.body, bg=BG)
-        hdr.pack(fill="x", pady=(0, 4))
-        # Empty placeholder cell for the icon column so the header aligns.
+        hdr = tk.Frame(section, bg=BG)
+        hdr.pack(fill="x", pady=(0, 2))
         tk.Label(hdr, text="", bg=BG, width=4).grid(row=0, column=0)
         for col, text, width in [(1, "Δ%", 7), (2, "z", 6), (3, "champion", 16)]:
             tk.Label(
@@ -231,19 +287,13 @@ class RecommenderApp:
                 font=("Consolas", 9, "bold"), width=width, anchor="w",
             ).grid(row=0, column=col, sticky="w", padx=(2, 0))
 
-        # Best non-keep suggestion gets the ★.  Computed once outside the loop
-        # so we don't re-scan the list for every row.
-        first_non_keep = next(
-            (idx for idx, sg in enumerate(suggestions)
-             if sg.source != "keep" and sg.is_known), None,
-        )
+        # First known bench entry is the best swap (suggestions sorted desc by Δ).
+        best_idx = next((i for i, s in enumerate(bench) if s.is_known), None)
 
-        for i, s in enumerate(suggestions):
+        for i, s in enumerate(bench):
             name = self.id_to_name.get(s.champion_id, f"#{s.champion_id}")
-            row = tk.Frame(self.body, bg=BG)
+            row = tk.Frame(section, bg=BG)
             row.pack(fill="x", pady=2)
-
-            # Column 0: icon (or blank square if unavailable).
             self._icon_cell(row, s.champion_id)
 
             if not s.is_known:
@@ -252,20 +302,12 @@ class RecommenderApp:
                 self._cell(row, 3, f"{name}  (not in vocab)", MUTED, 18)
                 continue
 
-            # Column 1: Δ% (change in P(win) from keeping current).
-            if s.source == "keep":
-                delta_text = "  ——"
-                delta_color = DIM
-                marker = "⊙"
-                name_color = FG
-            else:
-                delta_pp = s.delta * 100
-                delta_text = f"{delta_pp:+5.1f}%"
-                delta_color = GREEN if delta_pp > 0 else (RED if delta_pp < 0 else DIM)
-                marker = "★" if i == first_non_keep else " "
-                name_color = ACCENT if marker == "★" else FG
+            delta_pp = s.delta * 100
+            delta_text = f"{delta_pp:+5.1f}%"
+            delta_color = GREEN if delta_pp > 0 else (RED if delta_pp < 0 else DIM)
+            marker = "★" if i == best_idx else " "
+            name_color = ACCENT if marker == "★" else FG
 
-            # Column 2: absolute z-score of this champion in the meta.
             z = s.z_score
             z_text = f"{z:+.2f}"
             z_color = GREEN if z > 0.5 else (RED if z < -0.5 else FG)
