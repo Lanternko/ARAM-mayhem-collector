@@ -999,7 +999,20 @@ def render_html(
         border: 6px solid transparent;
         border-top-color: #0b0e13;
     }
-    .aug:hover .aug-tip { opacity: 1; }
+    /* When an augment sits near the top of the viewport, JS sets .flip-tip
+       so the tooltip drops below the card instead of clipping above. */
+    .aug.flip-tip .aug-tip {
+        bottom: auto;
+        top: calc(100% + 8px);
+    }
+    .aug.flip-tip .aug-tip::after {
+        top: auto;
+        bottom: 100%;
+        border-top-color: transparent;
+        border-bottom-color: #0b0e13;
+    }
+    .aug:hover .aug-tip,
+    .aug:focus-visible .aug-tip { opacity: 1; }
     .aug-tip-name {
         font-weight: 700;
         font-size: 12px;
@@ -1098,6 +1111,33 @@ def render_html(
            Numbers still available on hover (tooltip) and via the title attr. */
         .aug .alift { display: none; }
         .aug-tip { width: 170px; font-size: 10px; }
+        /* Touch-target floor (WCAG 2.5.5).  Chips were 4×10 padding on 11px
+           font ≈ 32 px tall.  Bump to a real 44 px tap area without growing
+           the visual pill, by adding transparent vertical padding. */
+        .chip { padding: 8px 12px; font-size: 11px; min-height: 36px; }
+        .gh-star { padding: 8px 14px; min-height: 36px; }
+    }
+    /* Keyboard a11y: every interactive element gets a visible focus ring
+       when focused via keyboard (not mouse click).  Uses the tier accent
+       (or a neutral white when no tier is in scope) and stays well clear
+       of the resting border colour. */
+    .chip:focus-visible,
+    .gh-star:focus-visible,
+    .search:focus-visible,
+    .champ:focus-visible,
+    .aug:focus-visible {
+        outline: 2px solid #f5e8ff;
+        outline-offset: 2px;
+    }
+    /* Reduced-motion override.  Disables prismShift / shineSweep /
+       slideDown so vestibular-sensitive users don't get hue drift and
+       sweep effects across the page. */
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.001ms !important;
+        }
     }
     """
 
@@ -1271,14 +1311,18 @@ def render_html(
                 f"{r['name']} · WR {wr_pct} · games {r['games']:,} · "
                 f"raw {r['raw_wr']*100:.1f}%"
             )
+            aria_label = f"{r['name']} {alias}，tier {tier}，勝率 {wr_pct}"
             parts.append(
                 f"<div class='champ' data-cid='{r['champion_id']}' "
                 f"data-tags='{tag_str}' data-search=\"{search_blob}\" "
+                f"role='button' tabindex='0' "
+                f"aria-label=\"{aria_label}\" "
                 f"title=\"{title}\">"
-                f"<img loading='lazy' src='{r['image']}' alt='{r['name']}'>"
+                f"<img loading='lazy' src='{r['image']}' alt=''>"
                 # The English alias is rendered as screen-reader-only text so
                 # Ctrl+F / Cmd+F can find e.g. "Aatrox" even though only the
-                # zh-TW name is drawn.
+                # zh-TW name is drawn.  (aria-label already announces it for
+                # actual screen readers.)
                 f"<span class='sr-only'>{alias}</span>"
                 f"<span class='wr'>{wr_pct}</span>"
                 f"<span class='name'>{r['name']}</span>"
@@ -1345,9 +1389,15 @@ def render_html(
                 <div class="aug-tip-stat">WR ${pct(entry.wr)} · ${signed(entry.lift)} · ${entry.g}場</div>
             </div>
         `;
+        // Augment card carries its own ARIA semantics so screen readers and
+        // keyboard users get the same info hover tooltip shows.
+        const ariaLabel = `${name}，勝率 ${pct(entry.wr)}，相對基準 ${signed(entry.lift)}，樣本 ${entry.g} 場${desc ? '，' + desc : ''}`;
         return `
-            <div class="aug ${kind} rarity-${rarity}" title="${escHtml(titleAttr)}">
-                ${icon ? `<img loading="lazy" src="${icon}" alt="${escHtml(name)}">` : '<div style="width:48px;height:48px;margin:0 auto 4px;background:#2a3142;border-radius:6px"></div>'}
+            <div class="aug ${kind} rarity-${rarity}"
+                 tabindex="0"
+                 aria-label="${escHtml(ariaLabel)}"
+                 title="${escHtml(titleAttr)}">
+                ${icon ? `<img loading="lazy" src="${icon}" alt="">` : '<div style="width:48px;height:48px;margin:0 auto 4px;background:#2a3142;border-radius:6px"></div>'}
                 <div class="aname">${escHtml(name)}</div>
                 <div class="awr">${pct(entry.wr)}</div>
                 <div class="alift">${signed(entry.lift)} · ${entry.g}場</div>
@@ -1529,6 +1579,33 @@ def render_html(
         setActiveChip(filterState.role);
         applyFilters();
     });
+
+    // Keyboard activation for cards.  Enter / Space on a `.champ` or `.aug`
+    // triggers the same path a click would (they're role="button" /
+    // tabindex="0").  Preventing default on Space stops the page from
+    // scrolling.
+    document.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const t = ev.target;
+        if (!t || !t.classList) return;
+        if (t.classList.contains('champ') || t.classList.contains('aug')) {
+            ev.preventDefault();
+            t.click();
+        }
+    });
+
+    // Augment tooltip viewport-clip protection: tooltips default to "above"
+    // the card.  When the card sits near the top of the viewport, the
+    // tooltip would clip — flip it below instead by toggling a class
+    // computed from `getBoundingClientRect`.
+    document.addEventListener('mouseover', (ev) => {
+        const aug = ev.target.closest && ev.target.closest('.aug');
+        if (!aug) return;
+        const rect = aug.getBoundingClientRect();
+        // Tooltip is ~ 110-140 px tall; flip when there's less than 160 px
+        // of headroom above the card.
+        aug.classList.toggle('flip-tip', rect.top < 160);
+    }, { passive: true });
 
     // Live search.
     const searchEl = document.getElementById('champ-search');
