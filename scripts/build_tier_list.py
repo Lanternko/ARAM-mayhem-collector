@@ -652,37 +652,26 @@ def render_html(
     }
     .tier-pill > span { position: relative; z-index: 2; }
     .tier-count { color: #9aa0a6; font-size: 12px; font-weight: 400; }
-    /* OP tier = "棱彩飾框" — Prismatic decorative frame instead of a filled
-       pill.  Trick: two-background trick paints an iridescent gradient on
-       the border-box (the full element including border) and a dark solid
-       on the padding-box (inside the border), so the only visible gradient
-       is the 2.5px outline.  The gradient still animates (prismShift) and
-       a soft shine sweep glints across the dark interior; an outer halo
-       (box-shadow) sells the "glowing" feel like a real Prismatic augment
-       card. */
+    /* Prismatic / pearl shine for the OP tier — animated highlight sweep +
+       outer halo glow, matching the iridescent augment-card look. */
     .tier-block[data-tier="OP"] .tier-pill {
-        background:
-            linear-gradient(#1b1424, #1b1424) padding-box,
-            linear-gradient(135deg,
-                #ffffff 0%, #e7d5ff 18%, #bcd6ff 36%,
-                #ffd5ec 58%, #fff1c8 78%, #ffffff 100%) border-box;
-        background-size: auto, 220% 220%;
+        background-size: 200% 200%;
         animation: prismShift 6s ease-in-out infinite;
-        border: 2.5px solid transparent;
-        color: #f5e8ff;
-        text-shadow: 0 0 6px rgba(255,220,255,0.6);
         box-shadow:
             0 0 12px rgba(220,180,255,0.55),
-            0 0 28px rgba(170,210,255,0.30);
+            0 0 28px rgba(170,210,255,0.30),
+            inset 0 0 0 1px rgba(255,255,255,0.55);
+        color: #2a1a4a;
+        text-shadow: 0 1px 0 rgba(255,255,255,0.8);
     }
     .tier-block[data-tier="OP"] .tier-pill::before {
         content: "";
         position: absolute;
         inset: 0;
         background: linear-gradient(115deg,
-            transparent 40%,
-            rgba(255,255,255,0.22) 50%,
-            transparent 60%);
+            transparent 35%,
+            rgba(255,255,255,0.75) 50%,
+            transparent 65%);
         background-size: 220% 100%;
         animation: shineSweep 3.2s linear infinite;
         z-index: 1;
@@ -708,14 +697,34 @@ def render_html(
         border-radius: 8px;
         overflow: hidden;
         background: #1f2530;
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.05);
+        /* Champion thumbnail wears its tier's colour as a 2px frame.
+           Non-OP tiers use a solid border; OP gets a prismatic gradient
+           via the .tier-block[data-tier="OP"] .champ rule below. */
+        border: 2px solid var(--tier-color, #555);
         cursor: pointer;
-        transition: transform .08s, box-shadow .08s;
+        transition: transform .08s, box-shadow .08s, filter .08s;
     }
     .champ:hover { transform: translateY(-1px); }
     .champ.selected {
-        box-shadow: 0 0 0 2px var(--tier-color), 0 4px 12px rgba(0,0,0,0.5);
         transform: translateY(-2px);
+        filter: brightness(1.08);
+        box-shadow: 0 0 0 1px #fff, 0 6px 16px rgba(0,0,0,0.6);
+    }
+    /* OP-tier champions get the "棱彩飾框" — Prismatic decorative frame —
+       so they're as visually distinct from T1 as Prismatic augments are
+       from Gold ones.  Double-background trick: inner dark colour clips to
+       padding-box, iridescent gradient renders on border-box, the transparent
+       2px border lets the gradient show.  prismShift animates the hue. */
+    .tier-block[data-tier="OP"] .champ {
+        border-color: transparent;
+        background:
+            linear-gradient(#1f2530, #1f2530) padding-box,
+            linear-gradient(135deg,
+                #ffffff 0%, #e7d5ff 18%, #bcd6ff 36%,
+                #ffd5ec 58%, #fff1c8 78%, #ffffff 100%) border-box;
+        background-size: auto, 220% 220%;
+        animation: prismShift 6s ease-in-out infinite;
+        box-shadow: 0 0 8px rgba(220,180,255,0.45);
     }
     .champ img {
         width: 100%;
