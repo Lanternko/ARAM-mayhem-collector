@@ -1,4 +1,4 @@
-<!-- lines: 61 -->
+<!-- lines: 132 -->
 # aram-winrate-nn — ARAM 英雄組合勝率預測 NN，Python / PyTorch
 
 ## Why
@@ -12,8 +12,10 @@
 - `src/aram_nn/models/` — `logreg.py` / `deepsets.py`
 - `src/aram_nn/train.py` / `eval.py` / `data.py` — 訓練 pipeline（完成）
 - `data/raw/` — parquet 原始資料；`data/lcu/games.db` — LCU SQLite 資料庫（`games` + `crawl_seen` set + `crawl_queue` priority frontier）
-- `scripts/` — `probe_user.py`, `probe_queues.py`, `lcu_collector.py`
-- 深度技術決策見 `PLAN.md`（v3，已經 Codex review）
+- `scripts/` — `probe_user.py`, `probe_queues.py`, `lcu_collector.py`, `build_tier_list.py`
+- `docs/index.html` — 公開 tier-list 網站（GitHub Pages, `main` branch `/docs` folder）→ https://lanternko.github.io/ARAM-Mayhem-Database/
+- `data/cache/` — `kiwi.bin.json` + `lol_stringtable_zh_tw.json` (CommunityDragon mirror, ~30 MB) 用來解析 Mayhem augment 中文敘述
+- 深度技術決策見 `PLAN.md`（v3，已經 Codex review）；部署流程見 `.claude/skills/deploy-tier-list/SKILL.md`
 
 ## Commands
 ```bash
@@ -37,6 +39,9 @@ python -m aram_nn.ingest.snowball \
 
 # 診斷：查某 Riot ID 最近打了哪些 queue
 python scripts/probe_user.py --region tw --riot-id "Name#TAG" --count 100
+
+# Tier list 網站重 build（部署 → `/deploy-tier-list` skill）
+python scripts/build_tier_list.py --site-url "https://lanternko.github.io/ARAM-Mayhem-Database/"
 ```
 
 ## LCU Collector (Mayhem data, local client only)
@@ -104,6 +109,8 @@ Database: `data/lcu/games.db` (SQLite) — safe to interrupt and resume.
 - **Never dedupe matches by champion-composition hash alone** — 不同真實對局可能剛好出現同一組 10 隻英雄；crawl / dataset exact dedupe 必須用 `game_id`，composition hash 只能當分析輔助欄位。
 - **Never hardcode routing host** — TW 的 match-v5 走 `sea.api.riotgames.com`，account-v1 走 `asia.api.riotgames.com`，platform (league-exp) 走 `tw2.api.riotgames.com`；三個不同，搞混會 404。
 - **Never pass `--patch ""`** in PowerShell to CLI — PowerShell 5.1 會把空字串吃掉導致 Click argument shift；省略 `--patch` 即為全收（預設值已是空字串）。
+- **Never publish the tier-list site from `/site`** — GitHub Pages 「Deploy from a branch」只接受 `/(root)` 或 `/docs`；用 `/site` Save 不會生效。永遠輸出到 `docs/index.html`（`build_tier_list.py` 預設）。
+- **Never `git add -A` / `git add .` when deploying the site** — 工作樹常有未追蹤的 WIP scripts；只 stage `docs/index.html`（必要時加 `scripts/build_tier_list.py`）。詳見 deploy-tier-list skill。
 
 ## Riot API 注意事項
 - Dev Key 每 24 小時過期，Python 端 401 / 403 都視為 key expired → 提示 regenerate

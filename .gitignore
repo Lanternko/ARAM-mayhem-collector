@@ -29,3 +29,5 @@ Thumbs.db
 
 # Per-user agent settings
 .claude/settings.local.json
+# Claude Code worktrees are local checkouts; never stage them
+.claude/worktrees/
