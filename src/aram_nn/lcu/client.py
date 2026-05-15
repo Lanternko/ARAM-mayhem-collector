@@ -37,6 +37,20 @@ class LCUClient:
             pass
         return None
 
+    def get_bytes(self, path: str, **params: Any) -> bytes | None:
+        """GET path, return raw response bytes (for binary assets like PNGs).
+
+        The default `.get()` decodes as JSON which fails on images; use this
+        for endpoints like /lol-game-data/assets/v1/champion-icons/<id>.png.
+        """
+        try:
+            r = self._client.get(path, params=params or None)
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+        return None
+
     def post(self, path: str, payload: Any = None, **params: Any) -> Any:
         """POST path with JSON payload, return parsed JSON or None on any error / non-200."""
         try:

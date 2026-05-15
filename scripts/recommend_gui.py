@@ -27,6 +27,7 @@ from pathlib import Path
 
 import click
 
+from aram_nn.icons import IconCache
 from aram_nn.lcu.client import (
     LCUClient, get_champion_summary, get_champ_select_session, get_gameflow_phase,
 )
@@ -92,6 +93,10 @@ def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval:
     the GUI can be validated without an LCU connection.  Predictions use the
     real LR model on the random teams, so delta magnitudes match what real
     play would produce — only the champion picks are synthetic.
+
+    Bench size is randomized between 5 and 10 each tick to exercise the
+    GUI's vertical scrolling and to match the bench sizes a real ARAM
+    queue produces once teammates start rerolling.
     """
     import random
 
@@ -100,8 +105,8 @@ def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval:
     cell_id = 2
 
     while not stop_event.is_set():
-        # Sample 10 distinct champions: 5 for my team, 5 for bench.
-        sample = random.sample(all_ids, 10)
+        bench_size = random.randint(5, 10)
+        sample = random.sample(all_ids, 5 + bench_size)
         my_team = sample[:5]
         bench = sample[5:]
         my_current = my_team[cell_id]
@@ -131,17 +136,20 @@ ACCENT   = "#ffd54f"
 
 
 class RecommenderApp:
-    def __init__(self, root: tk.Tk, q: queue.Queue) -> None:
+    def __init__(self, root: tk.Tk, q: queue.Queue, icon_cache: IconCache | None = None) -> None:
         self.root = root
         self.q = q
         self.id_to_name: dict[int, str] = {}
+        self.icon_cache = icon_cache
 
         root.title("ARAM Recommender")
         root.attributes("-topmost", True)
         root.attributes("-alpha", 0.93)
-        root.geometry("360x300+40+40")
+        # Wider + taller than v1: icons add ~40px width per row, and bench
+        # can now have up to 10 champions (11 rows incl. keep).
+        root.geometry("420x560+40+40")
         root.configure(bg=BG)
-        root.minsize(320, 200)
+        root.minsize(380, 240)
 
         # Tk widget constructors only accept a single int for padx/pady
         # (internal padding).  Asymmetric padding goes on the geometry
@@ -212,14 +220,16 @@ class RecommenderApp:
 
         self._clear_body()
 
-        # Column headers
+        # Column headers — columns: [icon] [Δ%] [z] [name].
         hdr = tk.Frame(self.body, bg=BG)
         hdr.pack(fill="x", pady=(0, 4))
-        for col, text, width in [(0, "Δ%", 8), (1, "z", 7), (2, "champion", 18)]:
+        # Empty placeholder cell for the icon column so the header aligns.
+        tk.Label(hdr, text="", bg=BG, width=4).grid(row=0, column=0)
+        for col, text, width in [(1, "Δ%", 7), (2, "z", 6), (3, "champion", 16)]:
             tk.Label(
                 hdr, text=text, bg=BG, fg=DIM,
                 font=("Consolas", 9, "bold"), width=width, anchor="w",
-            ).grid(row=0, column=col, sticky="w")
+            ).grid(row=0, column=col, sticky="w", padx=(2, 0))
 
         # Best non-keep suggestion gets the ★.  Computed once outside the loop
         # so we don't re-scan the list for every row.
@@ -231,15 +241,18 @@ class RecommenderApp:
         for i, s in enumerate(suggestions):
             name = self.id_to_name.get(s.champion_id, f"#{s.champion_id}")
             row = tk.Frame(self.body, bg=BG)
-            row.pack(fill="x", pady=1)
+            row.pack(fill="x", pady=2)
+
+            # Column 0: icon (or blank square if unavailable).
+            self._icon_cell(row, s.champion_id)
 
             if not s.is_known:
-                self._cell(row, 0, " n/a", MUTED, 8)
                 self._cell(row, 1, " n/a", MUTED, 7)
-                self._cell(row, 2, f"{name}  (not in vocab)", MUTED, 18)
+                self._cell(row, 2, " n/a", MUTED, 6)
+                self._cell(row, 3, f"{name}  (not in vocab)", MUTED, 18)
                 continue
 
-            # Column 0: Δ% (change in P(win) from keeping current).
+            # Column 1: Δ% (change in P(win) from keeping current).
             if s.source == "keep":
                 delta_text = "  ——"
                 delta_color = DIM
@@ -252,21 +265,42 @@ class RecommenderApp:
                 marker = "★" if i == first_non_keep else " "
                 name_color = ACCENT if marker == "★" else FG
 
-            # Column 1: absolute z-score of this champion in the meta.
+            # Column 2: absolute z-score of this champion in the meta.
             z = s.z_score
             z_text = f"{z:+.2f}"
             z_color = GREEN if z > 0.5 else (RED if z < -0.5 else FG)
 
-            self._cell(row, 0, delta_text, delta_color, 8)
-            self._cell(row, 1, z_text, z_color, 7)
-            self._cell(row, 2, f"{marker} {name}", name_color, 18)
+            self._cell(row, 1, delta_text, delta_color, 7)
+            self._cell(row, 2, z_text, z_color, 6)
+            self._cell(row, 3, f"{marker} {name}", name_color, 18)
+
+    def _icon_cell(self, parent: tk.Frame, champion_id: int) -> None:
+        """Place the champion icon in column 0 of `parent`.
+
+        Falls back to a hollow placeholder Label of the same width if the
+        IconCache can't produce a PhotoImage — keeps row alignment stable
+        whether icons resolve or not.
+        """
+        photo = self.icon_cache.get(champion_id) if self.icon_cache else None
+        if photo is not None:
+            lbl = tk.Label(parent, image=photo, bg=BG, bd=0)
+            # Hold the reference on the widget too — Tk doesn't keep it, and
+            # if the only reference is in IconCache._photos we're still safe,
+            # but the redundancy is cheap and removes a class of GC bugs.
+            lbl.image = photo  # type: ignore[attr-defined]
+            lbl.grid(row=0, column=0, padx=(0, 6))
+        else:
+            tk.Label(
+                parent, text="", bg=BG, width=4, height=2,
+            ).grid(row=0, column=0, padx=(0, 6))
 
     @staticmethod
     def _cell(parent: tk.Frame, col: int, text: str, fg: str, width: int) -> None:
+        # padx=(2,0) matches the header row so columns line up across frames.
         tk.Label(
             parent, text=text, bg=BG, fg=fg,
             font=("Consolas", 10), width=width, anchor="w",
-        ).grid(row=0, column=col, sticky="w")
+        ).grid(row=0, column=col, sticky="w", padx=(2, 0))
 
 
 # ---------- Entry point ----------
@@ -292,13 +326,21 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool) -> None:
     q: queue.Queue = queue.Queue()
     stop_event = threading.Event()
 
+    # IconCache works in both modes: prefers LCU (local, fast) when creds
+    # are present, otherwise falls back to Riot's Data Dragon CDN.  In
+    # --fake without League running, only the CDN path is used; that needs
+    # internet but caches to disk so future runs are instant offline.
+    creds_for_icons = get_credentials()  # may be None, that's fine
+    icon_cache = IconCache(Path("data/icons"), lcu_creds=creds_for_icons)
+    threading.Thread(target=icon_cache.prefetch_all, daemon=True).start()
+
     if fake:
         print("[gui] --fake: synthesizing champ-select states every 3s, no LCU needed")
         thread = threading.Thread(
             target=fake_poll_loop, args=(stop_event, q, model), daemon=True,
         )
     else:
-        creds = get_credentials()
+        creds = creds_for_icons  # reuse — same credentials work for both
         if not creds:
             # Show the error in a window — easier to notice than a stderr message
             # that scrolls off when the user double-clicks the script.
@@ -322,7 +364,7 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool) -> None:
                     # the GUI stays on its placeholder "Loading..." header forever.
 
     root = tk.Tk()
-    RecommenderApp(root, q)
+    RecommenderApp(root, q, icon_cache=icon_cache)
     try:
         root.mainloop()
     finally:
