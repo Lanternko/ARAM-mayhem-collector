@@ -6,7 +6,9 @@ where each champion icon carries a tier badge (OP / T1..T5) in the top-right.
 
 Clicking a champion expands an inline panel below its tier-row showing the
 top-5 best and bottom-5 worst augments (by Bayesian-smoothed winrate using
-that champion's own baseline winrate as the prior).
+that champion's own baseline winrate as the prior), plus best/worst same-team
+teammate synergies.  A right-side panel also lets users pick 1-4 champions and
+rank recommended teammates by aggregated pairwise z-score.
 
 Usage:
     python scripts/build_tier_list.py
@@ -314,10 +316,12 @@ def compute_winrates(
 ):
     """Compute champion winrates + per-(champion, augment) winrates.
 
-    Returns: (champ_records, champ_aug_records)
+    Returns: (champ_records, champ_aug_records, champ_pair_records)
       champ_records: list of dicts with champion_id, games, wins, raw_wr, bayes_wr
       champ_aug_records: list of dicts with champion_id, augment_id, games, wins,
                         raw_wr, smoothed_wr, lift (smoothed_wr - champ_baseline_wr)
+      champ_pair_records: list of dicts with champion_id, teammate_id, games,
+                         wins, smoothed_wr, lift, delta_vs_rest, z_score
     """
     con = sqlite3.connect(str(db_path))
     if patch_prefix:
@@ -342,17 +346,29 @@ def compute_winrates(
     wins: Counter[int] = Counter()
     ca_games: Counter[tuple[int, int]] = Counter()
     ca_wins: Counter[tuple[int, int]] = Counter()
+    cp_games: Counter[tuple[int, int]] = Counter()
+    cp_wins: Counter[tuple[int, int]] = Counter()
 
     for blue, red, bw, pj in rows:
         bw_bool = bool(bw)
-        for c in json.loads(blue):
-            games[c] += 1
-            if bw_bool:
-                wins[c] += 1
-        for c in json.loads(red):
-            games[c] += 1
-            if not bw_bool:
-                wins[c] += 1
+        blue_team = json.loads(blue)
+        red_team = json.loads(red)
+        for team, team_won in ((blue_team, bw_bool), (red_team, not bw_bool)):
+            for c in team:
+                games[c] += 1
+                if team_won:
+                    wins[c] += 1
+            # Ordered anchor -> teammate rows: recommendation is conditioned on
+            # the already-picked champions, so we preserve "given anchor A,
+            # how much does teammate B help?" rather than collapsing to an
+            # undirected pair too early.
+            for c in team:
+                for teammate in team:
+                    if teammate == c:
+                        continue
+                    cp_games[(c, teammate)] += 1
+                    if team_won:
+                        cp_wins[(c, teammate)] += 1
         if not pj:
             continue
         for p in json.loads(pj):
@@ -403,7 +419,46 @@ def compute_winrates(
             "lift": smoothed - baseline,
         })
 
-    return champ_records, champ_aug_records
+    # Same-team pair smoothing uses the anchor champion's own baseline winrate
+    # as the prior.  We still compute an anchor-conditional z-score vs that
+    # anchor's "all other teammates" bucket for ranking recommendations.
+    synergy_k = 40
+    champ_pair_records = []
+    for (cid, teammate_id), g in cp_games.items():
+        w = cp_wins[(cid, teammate_id)]
+        raw = w / g if g else 0.0
+        baseline = raw_wr_by_champ.get(cid, 0.5)
+        smoothed = (w + baseline * synergy_k) / (g + synergy_k)
+
+        rest_games = games[cid] - g
+        rest_wins = wins[cid] - w
+        if rest_games > 0:
+            rest_wr = rest_wins / rest_games
+            var_pair = raw * (1 - raw) / max(g, 1)
+            var_rest = rest_wr * (1 - rest_wr) / max(rest_games, 1)
+            se = (var_pair + var_rest) ** 0.5
+            z_score = ((raw - rest_wr) / se) if se > 0 else 0.0
+            delta_vs_rest = raw - rest_wr
+        else:
+            rest_wr = baseline
+            z_score = 0.0
+            delta_vs_rest = raw - rest_wr
+
+        champ_pair_records.append({
+            "champion_id": cid,
+            "teammate_id": teammate_id,
+            "games": g,
+            "wins": w,
+            "raw_wr": raw,
+            "smoothed_wr": smoothed,
+            "baseline_wr": baseline,
+            "rest_wr": rest_wr,
+            "lift": smoothed - baseline,
+            "delta_vs_rest": delta_vs_rest,
+            "z_score": z_score,
+        })
+
+    return champ_records, champ_aug_records, champ_pair_records
 
 
 RARITY_ORDER = ["kPrismatic", "kGold", "kSilver"]
@@ -445,10 +500,39 @@ def build_champ_augment_picks(
     return out
 
 
+def build_champ_synergy_index(
+    champ_pairs: list[dict],
+    *,
+    min_games: int,
+) -> dict[int, list[dict]]:
+    """Per champion, keep same-team teammate rows sorted by recommendation strength.
+
+    Ranking key is z-score first (the main recommendation metric surfaced in
+    the UI), then smoothed lift and sample size as tie-breakers.
+    """
+    by_champ: dict[int, list[dict]] = {}
+    for row in champ_pairs:
+        if row["games"] < min_games:
+            continue
+        by_champ.setdefault(row["champion_id"], []).append(row)
+
+    for cid, rows in by_champ.items():
+        rows.sort(
+            key=lambda r: (
+                -r["z_score"],
+                -r["lift"],
+                -r["games"],
+                r["teammate_id"],
+            )
+        )
+    return by_champ
+
+
 def render_html(
     records: list[dict],
     champ_meta: dict[int, dict],
     champ_picks: dict[int, dict],
+    champ_synergy: dict[int, list[dict]],
     aug_meta: dict[int, dict],
     *,
     queue_id: int,
@@ -456,6 +540,7 @@ def render_html(
     ddragon_version: str,
     total_games: int,
     min_games_per_pair: int,
+    min_synergy_games: int,
     site_url: str = "",
     og_image: str = "",
     build_date: str = "",
@@ -484,8 +569,8 @@ def render_html(
     patch_label = f"patch {patch_prefix}.*" if patch_prefix else "all patches"
 
     # Build the JS data payload. Keep it slim: only champs we render + their
-    # picked augments (bucketed by rarity) + the augment metadata for ids that
-    # actually appear.
+    # picked augments / teammate synergy rows + the augment metadata for ids
+    # that actually appear.
     used_aug_ids: set[int] = set()
     js_champs: dict[str, dict] = {}
 
@@ -497,10 +582,13 @@ def render_html(
             "lift": round(r["lift"], 4),
         }
 
-    for cid, picks in champ_picks.items():
+    visible_cids = [int(r["champion_id"]) for r in records]
+    visible_cid_set = set(visible_cids)
+    for cid in visible_cids:
         meta = champ_meta.get(cid)
         if meta is None:
             continue
+        picks = champ_picks.get(cid, {"top": {}, "bot": {}})
         top_buckets = {}
         bot_buckets = {}
         for rarity in RARITY_ORDER:
@@ -510,12 +598,25 @@ def render_html(
                 used_aug_ids.add(r["augment_id"])
             top_buckets[rarity] = [_pack(r) for r in top_rows]
             bot_buckets[rarity] = [_pack(r) for r in bot_rows]
+        pairs = [
+            {
+                "id": row["teammate_id"],
+                "g": row["games"],
+                "wr": round(row["smoothed_wr"], 4),
+                "lift": round(row["lift"], 4),
+                "z": round(row["z_score"], 3),
+            }
+            for row in champ_synergy.get(cid, [])
+            if row["teammate_id"] in visible_cid_set
+        ]
         js_champs[str(cid)] = {
             "name": meta["name"],
             "alias": meta.get("alias", ""),
+            "image": meta.get("image", ""),
             "tags": meta.get("tags") or [],
             "top": top_buckets,
             "bot": bot_buckets,
+            "pairs": pairs,
         }
     js_augs = {
         str(aid): {
@@ -561,6 +662,16 @@ def render_html(
         gap: 16px;
         margin-bottom: 16px;
     }
+    .app-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 24px;
+        align-items: start;
+    }
+    .app-shell.with-side-panel {
+        grid-template-columns: minmax(0, 1fr) 320px;
+    }
+    .main-col { min-width: 0; }
     .gh-star {
         display: inline-flex;
         align-items: center;
@@ -623,6 +734,35 @@ def render_html(
         flex: 1;
         justify-content: flex-end;
     }
+    .tool-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        padding: 6px 12px;
+        background: #21262d;
+        color: #e6e8eb;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+        transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .tool-btn:hover { background: #2a3142; border-color: #58606b; }
+    .tool-btn.active {
+        background: #f5d780;
+        border-color: #f5d780;
+        color: #231802;
+    }
+    .tool-btn.ghost {
+        background: transparent;
+        color: #c5cad3;
+    }
+    .tool-btn.ghost:hover {
+        background: rgba(255,255,255,0.04);
+    }
     .search-wrap {
         position: relative;
         flex: 1;
@@ -659,6 +799,150 @@ def render_html(
         color: #e6e8eb;
         font-weight: 600;
         font-variant-numeric: tabular-nums;
+    }
+    .side-panel {
+        position: sticky;
+        top: 24px;
+        background: #11151d;
+        border: 1px solid #1f2530;
+        border-radius: 12px;
+        padding: 14px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+    }
+    .side-panel.is-hidden {
+        display: none;
+    }
+    .side-head h2 {
+        margin: 0 0 4px;
+        font-size: 16px;
+        font-weight: 600;
+    }
+    .side-sub {
+        color: #9aa0a6;
+        font-size: 12px;
+        line-height: 1.55;
+    }
+    .pick-slots {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 14px 0 10px;
+    }
+    .pick-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 36px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid #30363d;
+        background: #1b2030;
+        color: #e6e8eb;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+    }
+    .pick-chip img {
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
+        display: block;
+        object-fit: cover;
+        background: #2a3142;
+        border: 1px solid rgba(255,255,255,0.08);
+        flex-shrink: 0;
+    }
+    .pick-chip.empty {
+        border-style: dashed;
+        color: #6b7280;
+        background: transparent;
+        cursor: default;
+    }
+    .pick-chip .ord {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: #f5d780;
+        color: #231802;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
+    .pick-note {
+        min-height: 18px;
+        color: #9aa0a6;
+        font-size: 11px;
+        margin-bottom: 10px;
+    }
+    .rec-list {
+        display: grid;
+        gap: 8px;
+    }
+    .panel-empty {
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.6;
+        padding: 8px 0 4px;
+    }
+    .rec-row {
+        display: grid;
+        grid-template-columns: 22px 40px 1fr;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        border-radius: 10px;
+        background: #1b2030;
+        border: 1px solid rgba(255,255,255,0.05);
+        cursor: pointer;
+        transition: background 0.12s, border-color 0.12s, transform 0.08s;
+    }
+    .rec-row:hover {
+        background: #20263a;
+        border-color: rgba(245,215,128,0.28);
+        transform: translateY(-1px);
+    }
+    .rec-rank {
+        color: #9aa0a6;
+        font-size: 11px;
+        font-weight: 700;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+    .rec-row img {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        display: block;
+        background: #2a3142;
+    }
+    .rec-main {
+        min-width: 0;
+    }
+    .rec-name {
+        display: block;
+        color: #e6e8eb;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .rec-meta {
+        display: block;
+        margin-top: 2px;
+        color: #9aa0a6;
+        font-size: 11px;
+        line-height: 1.35;
+        font-variant-numeric: tabular-nums;
+    }
+    .rec-meta .z {
+        color: #6bd16b;
+        font-weight: 700;
     }
     /* Empty filter state — surfaces when role × search yields zero champs.
        Mincho italic to match the caption typography elsewhere, deliberately
@@ -786,10 +1070,34 @@ def render_html(
         transition: transform .08s, box-shadow .08s, filter .08s;
     }
     .champ:hover { transform: translateY(-1px); }
-    .champ.selected {
+    .champ.detail-selected {
         transform: translateY(-2px);
         filter: brightness(1.08);
         box-shadow: 0 0 0 1px #fff, 0 6px 16px rgba(0,0,0,0.6);
+    }
+    .champ.pick-selected {
+        box-shadow:
+            inset 0 0 0 2px rgba(245,215,128,0.95),
+            0 0 0 1px rgba(245,215,128,0.35),
+            0 6px 16px rgba(0,0,0,0.38);
+    }
+    .champ.pick-selected::before {
+        content: attr(data-pick-rank);
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: #f5d780;
+        color: #231802;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 800;
+        z-index: 4;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.35);
     }
     /* OP-tier champions get the "棱彩飾框" — Prismatic decorative frame —
        so they're as visually distinct from T1 as Prismatic augments are
@@ -896,6 +1204,29 @@ def render_html(
     }
     .detail-head .cname { font-size: 16px; font-weight: 600; }
     .detail-head .cmeta { font-size: 12px; color: #9aa0a6; }
+    .detail-section + .detail-section {
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .detail-section-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .detail-section-head h3 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+    }
+    .section-meta {
+        color: #9aa0a6;
+        font-size: 11px;
+        font-family: "Noto Serif TC", "Source Han Serif TC", serif;
+    }
     .detail-cols {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1048,6 +1379,53 @@ def render_html(
     .aug.rarity-kGold   { box-shadow: inset 0 0 0 2px #f5c518; }
     .aug.rarity-kSilver { box-shadow: inset 0 0 0 2px #c0c5cc; }
     .aug.rarity-kPrismatic { box-shadow: inset 0 0 0 2px #d36bff; }
+    .mate-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        gap: 10px;
+    }
+    .mate-list.empty-list { color: #6b7280; font-size: 11px; padding: 8px 0; }
+    .mate-card {
+        display: grid;
+        grid-template-columns: 42px 1fr;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        background: #11151d;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.04);
+    }
+    .mate-card img {
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        display: block;
+        background: #2a3142;
+    }
+    .mate-card .mname {
+        font-size: 12px;
+        font-weight: 600;
+        color: #e6e8eb;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .mate-card .mwr {
+        margin-top: 2px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    .mate-card.good .mwr { color: #6bd16b; }
+    .mate-card.bad .mwr { color: #ff6b6b; }
+    .mate-card .mmeta {
+        margin-top: 2px;
+        font-size: 10px;
+        color: #9aa0a6;
+        font-family: "Noto Serif TC", "Source Han Serif TC", serif;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.35;
+    }
     .empty { color: #6b7280; font-size: 12px; }
     .footer {
         margin-top: 40px;
@@ -1079,6 +1457,14 @@ def render_html(
         color: #555a63;
         font-size: 10px;
     }
+    @media (max-width: 1080px) {
+        .app-shell,
+        .app-shell.with-side-panel { grid-template-columns: 1fr; }
+        .side-panel {
+            position: static;
+            order: -1;
+        }
+    }
     /* Mobile / narrow viewport: switch the detail panel from two columns
        (best / worst) to a single stack so prismatic / gold / silver rows
        stay readable, and shrink the tier-row label so champions get more
@@ -1100,7 +1486,11 @@ def render_html(
             margin-left: 0;
             width: 100%;
             justify-content: space-between;
+            flex-wrap: wrap;
         }
+        .tool-btn { min-height: 36px; }
+        .side-panel { padding: 12px; }
+        .pick-slots { gap: 6px; }
         .search { max-width: none; min-width: 0; }
         /* Tier heading slimmer; pill stays inline. */
         .tier-heading { margin: 6px 0; gap: 6px; }
@@ -1118,6 +1508,7 @@ def render_html(
         /* Each rarity row shows exactly the same 5 augments (top / bot),
            so force 5 columns and let each card shrink to fit. */
         .aug-list { grid-template-columns: repeat(5, 1fr); gap: 4px; }
+        .mate-list { grid-template-columns: 1fr; gap: 6px; }
         .aug { padding: 5px 3px; }
         .aug img { width: 36px; height: 36px; }
         .aug .aname { font-size: 9px; min-height: 22px; }
@@ -1138,6 +1529,9 @@ def render_html(
        of the resting border colour. */
     .chip:focus-visible,
     .gh-star:focus-visible,
+    .tool-btn:focus-visible,
+    .pick-chip:focus-visible,
+    .rec-row:focus-visible,
     .search:focus-visible,
     .champ:focus-visible,
     .aug:focus-visible {
@@ -1160,6 +1554,7 @@ def render_html(
         "champs": js_champs,
         "augs": js_augs,
         "min_games_per_pair": min_games_per_pair,
+        "min_synergy_games": min_synergy_games,
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
@@ -1173,7 +1568,8 @@ def render_html(
     og_title = f"{header_title} ({patch_label}, {total_games:,} 場樣本)"
     og_desc = (
         f"基於 {total_games:,} 場 LCU 抓取的 {queue_label} 對戰，"
-        "每位英雄分別給出最佳 / 最差的 彩色 / 金色 / 銀色 augment（含中文效果說明）。"
+        "每位英雄分別給出最佳 / 最差的 augment、同隊搭檔組合，"
+        "並支援 1~4 英雄的 z-score 推薦。"
     )
 
     meta_lines: list[str] = []
@@ -1240,7 +1636,7 @@ def render_html(
     parts.append(
         f"<div class='subtitle'>"
         f"{short_patch} · {date_str} ({total_games:,} games) · "
-        "點擊英雄展開 augment"
+        "點擊英雄看 augment / 搭檔；右側可選 1~4 隻英雄看推薦"
         f"</div>"
     )
     parts.append("</div>")
@@ -1251,6 +1647,8 @@ def render_html(
         f"</a>"
     )
     parts.append("</div>")  # /page-header
+    parts.append("<div class='app-shell'>")
+    parts.append("<div class='main-col'>")
 
     # Filter bar: role chips + free-text search + live "N shown" counter.
     parts.append("<div class='filter-bar'>")
@@ -1269,6 +1667,13 @@ def render_html(
         )
     parts.append("</div>")  # /role-chips
     parts.append("<div class='filter-tools'>")
+    parts.append(
+        '<button class="tool-btn" id="recommend-mode" type="button" '
+        'aria-pressed="false">選角推薦</button>'
+    )
+    parts.append(
+        '<button class="tool-btn ghost" id="clear-picks" type="button">清空選取</button>'
+    )
     # Search input wrapped in a label with an inline magnifier SVG sitting
     # in the input's left padding (the wrapper is positioned, the input
     # has padding-left to clear the icon).
@@ -1383,6 +1788,21 @@ def render_html(
         "</div>"
     )
     parts.append("</div>")
+    parts.append("</div>")  # /main-col
+    parts.append(
+        "<aside class='side-panel' id='side-panel'>"
+        "<div class='side-head'>"
+        "<div>"
+        "<h2>組合推薦</h2>"
+        "<div class='side-sub'>同隊兩兩組合，優先看相性分數（平均 z-score 並考慮覆蓋率）。先開啟「選角推薦」，再從左側選 1~4 隻英雄。</div>"
+        "</div>"
+        "</div>"
+        "<div class='pick-slots' id='pick-slots'></div>"
+        "<div class='pick-note' id='pick-note'></div>"
+        "<div class='rec-list' id='rec-list'></div>"
+        "</aside>"
+    )
+    parts.append("</div>")  # /app-shell
 
     js = """
     const DATA = __PAYLOAD__;
@@ -1443,31 +1863,86 @@ def render_html(
     function renderDetail(cid) {
         const info = DATA.champs[cid];
         if (!info) {
-            return `<div class="empty">該英雄沒有 augment 資料（每組需 >= ${DATA.min_games_per_pair} 場）。</div>`;
+            return `<div class="empty">這個英雄目前沒有可顯示的資料。</div>`;
         }
         const top = info.top || {};
         const bot = info.bot || {};
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
         const botRows = RARITIES.map(r => buildRarityRow(bot[r.key], 'bad', r)).join('');
+        const pairs = info.pairs || [];
+        const mateTop = pairs.slice(0, 5);
+        const mateBot = [...pairs].slice(-5).reverse();
+        const buildMateCard = (entry, kind) => {
+            const mate = DATA.champs[String(entry.id)];
+            const name = mate ? mate.name : ('#' + entry.id);
+            const image = mate && mate.image ? mate.image : '';
+            const zText = `${entry.z >= 0 ? '+' : ''}${entry.z.toFixed(2)}`;
+            const titleAttr = `${name} · z ${zText} · WR ${pct(entry.wr)} · ${signed(entry.lift)} · ${entry.g}場`;
+            return `
+                <div class="mate-card ${kind}" title="${escHtml(titleAttr)}">
+                    ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:#2a3142"></div>'}
+                    <div>
+                        <div class="mname">${escHtml(name)}</div>
+                        <div class="mwr">${pct(entry.wr)}</div>
+                        <div class="mmeta">z ${zText} · ${signed(entry.lift)} · ${entry.g}場</div>
+                    </div>
+                </div>
+            `;
+        };
+        const buildMateList = (items, kind) => {
+            if (!items.length) return `<div class="mate-list empty-list">資料不足</div>`;
+            return `<div class="mate-list">${items.map(entry => buildMateCard(entry, kind)).join('')}</div>`;
+        };
         return `
             <div class="detail-head">
                 <span class="cname">${info.name}</span>
-                <span class="cmeta">每種稀有度各取最佳 / 最差 5 個</span>
+                <span class="cmeta">左邊看 augment，下面看同隊兩兩搭檔</span>
             </div>
-            <div class="detail-cols">
-                <div class="detail-col best">
-                    <h3>最佳</h3>
-                    ${topRows}
+            <div class="detail-section">
+                <div class="detail-section-head">
+                    <h3>Augment</h3>
+                    <span class="section-meta">每種稀有度各取最佳 / 最差 5 個</span>
                 </div>
-                <div class="detail-col worst">
-                    <h3>最差</h3>
-                    ${botRows}
+                <div class="detail-cols">
+                    <div class="detail-col best">
+                        <h3>最佳</h3>
+                        ${topRows}
+                    </div>
+                    <div class="detail-col worst">
+                        <h3>最差</h3>
+                        ${botRows}
+                    </div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <div class="detail-section-head">
+                    <h3>搭檔組合</h3>
+                    <span class="section-meta">同隊兩兩組合，依 z-score 排名，至少 ${DATA.min_synergy_games} 場</span>
+                </div>
+                <div class="detail-cols">
+                    <div class="detail-col best">
+                        <h3>最佳</h3>
+                        ${buildMateList(mateTop, 'good')}
+                    </div>
+                    <div class="detail-col worst">
+                        <h3>最差</h3>
+                        ${buildMateList(mateBot, 'bad')}
+                    </div>
                 </div>
             </div>
         `;
     }
 
-    let selected = null;
+    const REC_LIST_LIMIT = 12;
+    const MAX_TEAM_PICKS = 4;
+    let detailSelected = null;
+    let recommendMode = false;
+    let teamPicks = [];
+    let pickNotice = '';
+
+    function zFmt(x) {
+        return `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
+    }
 
     // Find the last .champ in the same visual row as `clicked` (same offsetTop).
     // Tier-grid is a CSS grid so offsetTop tells us the row reliably across
@@ -1483,26 +1958,163 @@ def render_html(
         return last;
     }
 
-    document.addEventListener('click', (ev) => {
-        const champ = ev.target.closest('.champ');
-        if (!champ) return;
+    function syncPickDecorations() {
+        document.querySelectorAll('.champ').forEach(champ => {
+            const cid = champ.getAttribute('data-cid');
+            const idx = teamPicks.indexOf(cid);
+            champ.classList.toggle('pick-selected', idx !== -1);
+            if (idx !== -1) {
+                champ.setAttribute('data-pick-rank', String(idx + 1));
+            } else {
+                champ.removeAttribute('data-pick-rank');
+            }
+        });
+    }
+
+    function aggregateRecommendations() {
+        if (!teamPicks.length) return [];
+        const pickedSet = new Set(teamPicks);
+        const want = teamPicks.length;
+        const byCandidate = new Map();
+        teamPicks.forEach(anchorId => {
+            const info = DATA.champs[anchorId];
+            if (!info) return;
+            (info.pairs || []).forEach(entry => {
+                const candidateId = String(entry.id);
+                if (pickedSet.has(candidateId)) return;
+                const row = byCandidate.get(candidateId) || {
+                    id: candidateId,
+                    coverage: 0,
+                    zSum: 0,
+                    liftSum: 0,
+                    wrSum: 0,
+                    minGames: Number.POSITIVE_INFINITY,
+                };
+                row.coverage += 1;
+                row.zSum += entry.z;
+                row.liftSum += entry.lift;
+                row.wrSum += entry.wr;
+                row.minGames = Math.min(row.minGames, entry.g);
+                byCandidate.set(candidateId, row);
+            });
+        });
+        return [...byCandidate.values()]
+            .map(row => ({
+                ...row,
+                full: row.coverage === want,
+                coverageRatio: row.coverage / want,
+                fitScore: row.zSum / want,
+                zAvg: row.zSum / row.coverage,
+                liftAvg: row.liftSum / row.coverage,
+                wrAvg: row.wrSum / row.coverage,
+            }))
+            .sort((a, b) =>
+                b.fitScore - a.fitScore ||
+                b.zAvg - a.zAvg ||
+                b.liftAvg - a.liftAvg ||
+                Number(b.full) - Number(a.full) ||
+                b.coverage - a.coverage ||
+                b.minGames - a.minGames
+            );
+    }
+
+    function renderSidePanel() {
+        const shell = document.querySelector('.app-shell');
+        const panel = document.getElementById('side-panel');
+        const slots = document.getElementById('pick-slots');
+        const note = document.getElementById('pick-note');
+        const recList = document.getElementById('rec-list');
+        if (!shell || !panel || !slots || !note || !recList) return;
+
+        const showPanel = recommendMode && teamPicks.length > 0;
+        shell.classList.toggle('with-side-panel', showPanel);
+        panel.classList.toggle('is-hidden', !showPanel);
+        if (!showPanel) return;
+
+        const chips = [];
+        teamPicks.forEach((cid, idx) => {
+            const info = DATA.champs[cid];
+            const name = info ? info.name : ('#' + cid);
+            const image = info && info.image ? info.image : '';
+            chips.push(
+                `<button class="pick-chip" type="button" data-remove-cid="${cid}" title="移除 ${escHtml(name)}">` +
+                `<span class="ord">${idx + 1}</span>` +
+                (image ? `<img loading="lazy" src="${image}" alt="">` : '') +
+                `<span>${escHtml(name)}</span></button>`
+            );
+        });
+        for (let i = teamPicks.length; i < MAX_TEAM_PICKS; i += 1) {
+            chips.push(`<div class="pick-chip empty"><span class="ord">${i + 1}</span>尚未選擇</div>`);
+        }
+        slots.innerHTML = chips.join('');
+
+        const recs = aggregateRecommendations();
+        const want = teamPicks.length;
+        const hasFull = recs.some(row => row.full);
+        if (pickNotice) {
+            note.textContent = pickNotice;
+        } else if (!teamPicks.length) {
+            note.textContent = `最多選 ${MAX_TEAM_PICKS} 隻；推薦優先看平均 z-score，並考慮 coverage。`;
+        } else if (want > 1 && !hasFull) {
+            note.textContent = `目前沒有 ${want}/${want} 全覆蓋候選，以下改用部分 pair 資料排序。`;
+        } else {
+            note.textContent = `已選 ${want}/${MAX_TEAM_PICKS} 隻；pair 門檻 >= ${DATA.min_synergy_games} 場。`;
+        }
+
+        if (!teamPicks.length) {
+            recList.innerHTML = `<div class="panel-empty">先開啟「選角推薦」，再從左側點 1~4 隻英雄。右邊會排出最適合補進來的英雄。</div>`;
+            return;
+        }
+        if (!recs.length) {
+            recList.innerHTML = `<div class="panel-empty">這組英雄目前沒有足夠的 pair 資料。</div>`;
+            return;
+        }
+
+        recList.innerHTML = recs.slice(0, REC_LIST_LIMIT).map((row, idx) => {
+            const info = DATA.champs[row.id];
+            const name = info ? info.name : ('#' + row.id);
+            const image = info && info.image ? info.image : '';
+            const coverage = `${row.coverage}/${want}`;
+            const meta = `z <span class="z">${zFmt(row.zAvg)}</span> · ${signed(row.liftAvg)} · ${coverage} · min ${row.minGames}場`;
+            return `
+                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(name)} · 平均 z ${zFmt(row.zAvg)}">
+                    <span class="rec-rank">${idx + 1}</span>
+                    ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
+                    <span class="rec-main">
+                        <span class="rec-name">${escHtml(name)}</span>
+                        <span class="rec-meta">${meta}</span>
+                    </span>
+                </button>
+            `;
+        }).join('');
+    }
+
+    function setRecommendMode(next) {
+        recommendMode = Boolean(next);
+        const btn = document.getElementById('recommend-mode');
+        if (!btn) return;
+        btn.classList.toggle('active', recommendMode);
+        btn.setAttribute('aria-pressed', recommendMode ? 'true' : 'false');
+        btn.textContent = recommendMode ? '選角推薦：開' : '選角推薦';
+    }
+
+    function openDetailForChamp(champ) {
         const cid = champ.getAttribute('data-cid');
         const block = champ.closest('.tier-block');
-        const grid  = block.querySelector('.tier-grid');
         const host  = block.querySelector('.detail-host');
 
         // Clear any previously selected highlight + detail elsewhere.
-        document.querySelectorAll('.champ.selected').forEach(el => {
-            if (el !== champ) el.classList.remove('selected');
+        document.querySelectorAll('.champ.detail-selected').forEach(el => {
+            if (el !== champ) el.classList.remove('detail-selected');
         });
         document.querySelectorAll('.detail-host').forEach(el => {
             if (el !== host) el.innerHTML = '';
         });
 
-        if (selected === cid && host.firstChild) {
+        if (detailSelected === cid && host.firstChild) {
             host.innerHTML = '';
-            champ.classList.remove('selected');
-            selected = null;
+            champ.classList.remove('detail-selected');
+            detailSelected = null;
             return;
         }
 
@@ -1515,8 +2127,68 @@ def render_html(
         }
 
         host.innerHTML = `<div class="detail">${renderDetail(cid)}</div>`;
-        champ.classList.add('selected');
-        selected = cid;
+        champ.classList.add('detail-selected');
+        detailSelected = cid;
+    }
+
+    function openDetailByCid(cid) {
+        const champ = document.querySelector(`.champ[data-cid="${cid}"]:not(.hidden)`);
+        if (!champ) return;
+        openDetailForChamp(champ);
+        champ.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function toggleTeamPick(cid) {
+        pickNotice = '';
+        const idx = teamPicks.indexOf(cid);
+        if (idx !== -1) {
+            teamPicks.splice(idx, 1);
+        } else if (teamPicks.length >= MAX_TEAM_PICKS) {
+            pickNotice = `最多只能選 ${MAX_TEAM_PICKS} 隻英雄。`;
+        } else {
+            teamPicks.push(cid);
+        }
+        syncPickDecorations();
+        renderSidePanel();
+    }
+
+    document.addEventListener('click', (ev) => {
+        const modeBtn = ev.target.closest('#recommend-mode');
+        if (modeBtn) {
+            setRecommendMode(!recommendMode);
+            pickNotice = '';
+            renderSidePanel();
+            return;
+        }
+        const clearBtn = ev.target.closest('#clear-picks');
+        if (clearBtn) {
+            teamPicks = [];
+            pickNotice = '';
+            syncPickDecorations();
+            renderSidePanel();
+            return;
+        }
+        const removeBtn = ev.target.closest('[data-remove-cid]');
+        if (removeBtn) {
+            teamPicks = teamPicks.filter(cid => cid !== removeBtn.getAttribute('data-remove-cid'));
+            pickNotice = '';
+            syncPickDecorations();
+            renderSidePanel();
+            return;
+        }
+        const recRow = ev.target.closest('.rec-row');
+        if (recRow) {
+            openDetailByCid(recRow.getAttribute('data-cid'));
+            return;
+        }
+        const champ = ev.target.closest('.champ');
+        if (!champ) return;
+        const cid = champ.getAttribute('data-cid');
+        if (recommendMode) {
+            toggleTeamPick(cid);
+            return;
+        }
+        openDetailForChamp(champ);
     });
 
     // When viewport width changes, the row containing the selected champ
@@ -1524,16 +2196,20 @@ def render_html(
     // champ on the new layout.
     let resizeT = null;
     window.addEventListener('resize', () => {
-        if (!selected) return;
+        if (!detailSelected) return;
         clearTimeout(resizeT);
         resizeT = setTimeout(() => {
-            const champ = document.querySelector(`.champ[data-cid="${selected}"].selected`);
+            const champ = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
             if (!champ) return;
             const host = champ.closest('.tier-block').querySelector('.detail-host');
             const anchor = lastChampInRow(champ);
             if (anchor.nextSibling !== host) anchor.after(host);
         }, 120);
     });
+
+    setRecommendMode(false);
+    syncPickDecorations();
+    renderSidePanel();
 
     /* -----  Filter / search  --------------------------------------- */
 
@@ -1569,12 +2245,12 @@ def render_html(
         if (empty) empty.classList.toggle('visible', shown === 0);
 
         // If the currently-selected champ got hidden, close its detail panel.
-        if (selected) {
-            const sel = document.querySelector(`.champ[data-cid="${selected}"].selected`);
+        if (detailSelected) {
+            const sel = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
             if (!sel || sel.classList.contains('hidden')) {
                 document.querySelectorAll('.detail-host').forEach(h => h.innerHTML = '');
-                document.querySelectorAll('.champ.selected').forEach(el => el.classList.remove('selected'));
-                selected = null;
+                document.querySelectorAll('.champ.detail-selected').forEach(el => el.classList.remove('detail-selected'));
+                detailSelected = null;
             }
         }
     }
@@ -1678,6 +2354,8 @@ def render_html(
               help="Output HTML path (default: docs/index.html — the only non-root folder GitHub Pages serves from)")
 @click.option("--min-games", type=int, default=50, help="Drop champions below this game count")
 @click.option("--min-pair-games", type=int, default=15, help="Min games per (champ, augment) pair")
+@click.option("--min-synergy-games", type=int, default=40,
+              help="Min games per same-team champion pair for synergy / recommendation ranking")
 @click.option("--top-n", type=int, default=5)
 @click.option("--bot-n", type=int, default=5)
 @click.option("--site-url", default="",
@@ -1694,6 +2372,7 @@ def main(
     out_path: Path,
     min_games: int,
     min_pair_games: int,
+    min_synergy_games: int,
     top_n: int,
     bot_n: int,
     site_url: str,
@@ -1703,11 +2382,12 @@ def main(
     patch_prefix = patch_prefix or None
     click.echo(f"[tierlist] db={db}  queue={queue_id}  patch_prefix={patch_prefix}")
 
-    champ_records, champ_aug = compute_winrates(db, queue_id, patch_prefix)
+    champ_records, champ_aug, champ_pairs = compute_winrates(db, queue_id, patch_prefix)
     total_games = sum(r["games"] for r in champ_records) // 10
     champ_records = [r for r in champ_records if r["games"] >= min_games]
     click.echo(f"[tierlist] {len(champ_records)} champions after min_games={min_games}")
     click.echo(f"[tierlist] {len(champ_aug):,} (champ, augment) pairs total")
+    click.echo(f"[tierlist] {len(champ_pairs):,} ordered same-team champion pairs total")
 
     version, champ_meta = load_champion_metadata(ddragon_version)
     click.echo(f"[tierlist] data dragon version: {version}")
@@ -1730,6 +2410,14 @@ def main(
         f"[tierlist] {len(picks)} champions have >= 1 rarity-bucketed pair "
         f"(games >= {min_pair_games})"
     )
+    synergy = build_champ_synergy_index(
+        champ_pairs,
+        min_games=min_synergy_games,
+    )
+    click.echo(
+        f"[tierlist] {len(synergy)} champions have >= 1 teammate synergy row "
+        f"(games >= {min_synergy_games})"
+    )
 
     if not build_date:
         build_date = _dt.date.today().isoformat()
@@ -1738,12 +2426,14 @@ def main(
         champ_records,
         champ_meta,
         picks,
+        synergy,
         aug_meta,
         queue_id=queue_id,
         patch_prefix=patch_prefix,
         ddragon_version=version,
         total_games=total_games,
         min_games_per_pair=min_pair_games,
+        min_synergy_games=min_synergy_games,
         site_url=site_url,
         og_image=og_image,
         build_date=build_date,
