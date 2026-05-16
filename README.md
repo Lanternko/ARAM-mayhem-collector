@@ -1,10 +1,13 @@
 # ARAM Mayhem Database
 
-> 2026 ARAM Mayhem 英雄 + augment 勝率 tier list — 從 LCU 真實對局抓取，每張 augment 卡 hover 顯示中文效果。
+> ARAM Mayhem 英雄勝率 tier list + Augment推薦 — 資料來自台服真實對局。
 
-🔗 **Live site**: **<https://lanternko.github.io/ARAM-Mayhem-Database/>**
+🔗 **Tier List 網站**: **<https://lanternko.github.io/ARAM-Mayhem-Database/>**
 
-⭐ **覺得有用請按 Star ↗ 讓更多人看到** — 這是一個人下班時間做的小專案，多一顆星都是動力。
+⭐ **覺得有用請按 Star ↗ 讓更多人看到** — 搜集資料花費大量時間，按星星就是支持。
+
+<img width="2491" height="1021" alt="image" src="https://github.com/user-attachments/assets/f112994c-6bdb-4878-84ba-88873ab34e1c" />
+
 
 ---
 
@@ -12,13 +15,13 @@
 
 Riot 公開 API 從 patch 14.x 開始**整場移除 Mayhem (queueId 2400)**，dev key 完全拿不到對戰資料。OP.GG / U.GG 之類網站也因此沒有 Mayhem 統計。
 
-但 League 客戶端的本機 LCU API 還能查到自己 + 最近對手的 match 詳細資料。本專案：
+但 League 客戶端的本機 LCU API 還能查到自己 + 最近對手的 match 詳細資料（類似戰績稽查）。本專案：
 
-1. 跑一個本機 collector 從你的 LCU snowball 擴張（self → 好友 → 對手 → 對手的對手 …）
-2. 把每場 Mayhem 對局的 10 位玩家英雄 + augment + 勝負存進 SQLite
+1. 跑一個本機 collector 從你的 LCU snowball 擴張（self → 好友 → 對手 → 對手的對手 …）（橫向搜索BFS）
+2. 把每場 大亂鬥 對局的 10 位玩家英雄 + augment + 勝負存進 SQLite
 3. 每隔幾天合併資料、產生新版 tier list 推上 GitHub Pages
 
-目前資料量 ~20,000 場 Mayhem 對局（patch 16.10）。
+目前資料量 > 20,000 場 Mayhem 對局（patch 16.10）。
 
 ---
 
