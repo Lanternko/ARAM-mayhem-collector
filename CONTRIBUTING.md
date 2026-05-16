@@ -45,30 +45,34 @@ python scripts/lcu_collector.py status
 
 ### 3. 匯出 + 自動開 Issue（推薦）
 ```powershell
-python scripts/lcu_collector.py export-share --queue 2400 --auto-issue
+python scripts/lcu_collector.py export-share --queue 2400 --patch-prefix 16.10 --auto-issue
 ```
 這一行會：
-1. 產出 `data/share/share_<時間戳>.db`（無 PUUID）
+1. 產出兩個檔到 `data/share/`：
+   - `share_<時間戳>.db` — SQLite 原檔（無 PUUID）
+   - `share_<時間戳>.db.zip` — **要上傳的是這個**（GitHub 不接受 `.db` 副檔名）
 2. **自動開瀏覽器**到 [Lanternko/ARAM-Mayhem-Database 的 Issue 頁](https://github.com/Lanternko/ARAM-Mayhem-Database/issues/new?template=contribute-data.md)，title / 摘要 / 隱私 checklist 全部 pre-fill 好
 
 你只需要在瀏覽器分頁裡：
-- **把剛產出的 `.db` 檔拖進留言框**
+- **把 `share_<時間戳>.db.zip` 拖進留言框**（不是 `.db`！）
 - 按 **Submit new issue**
 
-終端會印：
+> ⚠ 為什麼預設加 `--patch-prefix 16.10`：tier list 是 patch-sensitive，混 patch 資料會稀釋訊號。你可以改成當前最新 patch（例如 `--patch-prefix 16.11`）。若不加，會把所有歷史 patch 一起送，腳本會印警告。
+
+終端會印類似：
 ```
-[export-share] wrote data/share/share_2026-05-16T12-30-00Z.db
+[export-share] wrote D:\...\data\share\share_<時間戳>.db.zip
   games    : 500 (filtered from 38484)
   queues   : 2400=500
   blue_wr  : 0.518
   patches  : 16.10.776=500
-  file size: 142.3KB
+  file size: 78.1KB (zipped from 142.3KB)
   contents : games table only - no PUUIDs, no crawl frontier
+  open dir : file:///D:/.../data/share   (Ctrl+click in most terminals)
 
 Pre-filled GitHub Issue ready:
   title : [data] 16.10 - 500 games
-  repo  : Lanternko/ARAM-Mayhem-Database
-  URL   : https://github.com/Lanternko/.../issues/new?template=...
+  ...
 Opening in your default browser...
 ```
 
@@ -93,11 +97,12 @@ Opening in your default browser...
 （自己 fork 來跑也可以這樣 merge 別人的）
 
 ```powershell
-# 1. 從 Issue 把附檔下載到 data/share/incoming/
-# 2. 先驗證
-python scripts/lcu_collector.py verify-share data/share/incoming/*.db
+# 1. 從 Issue 把附檔（.db.zip）下載到 data/share/incoming/
+# 2. 先驗證（verify-share 會自動解 .zip）
+python scripts/lcu_collector.py verify-share data/share/incoming/*.zip
 
-# 3. 沒問題就合進主 db（建議先用新檔名測試）
+# 3. 沒問題後解壓再合進主 db（merge-db 只吃 .db，所以先 Expand-Archive 一下）
+Get-ChildItem data/share/incoming/*.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath data/share/incoming -Force }
 python scripts/lcu_collector.py merge-db --out-db data/lcu/games_merged.db --glob "data/share/incoming/*.db"
 
 # 4. 確認合進 N 場、blue_wr 正常後，再 overwrite 主 db

@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+import zipfile
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote, unquote, urlencode
@@ -1419,6 +1420,20 @@ def merge_db(out_db: Path, globs: tuple[str, ...], vacuum: bool, sources: tuple[
 _CONTRIB_REPO_DEFAULT = "Lanternko/ARAM-Mayhem-Database"
 
 
+def _patch_sort_key(patch: str) -> tuple:
+    """Version-aware sort key so 16.10.x > 16.9.x (lex would put 16.10 < 16.9)."""
+    try:
+        return tuple(int(part) for part in str(patch).split("."))
+    except (ValueError, AttributeError):
+        return (-1,)
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f}KB"
+    return f"{size_bytes / (1024 * 1024):.2f}MB"
+
+
 @cli.command("export-share")
 @click.option("--db", "src_db", default=DEFAULT_DB, type=click.Path(path_type=Path),
               show_default=True, help="Source SQLite database (your local games.db)")
@@ -1520,43 +1535,67 @@ def export_share(
         sys.exit(1)
 
     blue_wr = blue_wins_total / total_out
-    size_bytes = out_path.stat().st_size
-    if size_bytes < 1024 * 1024:
-        size_str = f"{size_bytes / 1024:.1f}KB"
-    else:
-        size_str = f"{size_bytes / (1024 * 1024):.2f}MB"
+    db_size = out_path.stat().st_size
+    db_size_str = _format_size(db_size)
+
+    # Zip the .db because GitHub Issue attachments reject .db (file type not on
+    # the allowlist). The .zip is also smaller, which helps the 25 MB cap.
+    zip_path = out_path.with_suffix(out_path.suffix + ".zip")
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.write(out_path, arcname=out_path.name)
+    zip_size = zip_path.stat().st_size
+    zip_size_str = _format_size(zip_size)
 
     abs_out_path = out_path.resolve()
-    folder_uri = abs_out_path.parent.as_uri()
+    abs_zip_path = zip_path.resolve()
+    folder_uri = abs_zip_path.parent.as_uri()
 
-    click.echo(f"[export-share] wrote {abs_out_path}")
+    sorted_patches = sorted(patches_seen.items(), key=lambda kv: _patch_sort_key(kv[0]))
+    if not patches_seen:
+        patch_display = "unknown"
+    elif len(sorted_patches) <= 4:
+        patch_display = ", ".join(f"{p}={n}" for p, n in sorted_patches)
+    else:
+        patch_display = f"{sorted_patches[0][0]}...{sorted_patches[-1][0]} ({len(sorted_patches)} patches)"
+
+    # Title patch logic: prefer single patch, then dominant patch (>=60%), else version range.
+    if patches_seen:
+        top_patch, top_count = max(patches_seen.items(), key=lambda kv: kv[1])
+        if len(patches_seen) == 1:
+            title_patch = ".".join(str(top_patch).split(".")[:2])
+        elif top_count / total_out >= 0.6:
+            title_patch = ".".join(str(top_patch).split(".")[:2]) + "+"
+        else:
+            lo = ".".join(str(sorted_patches[0][0]).split(".")[:2])
+            hi = ".".join(str(sorted_patches[-1][0]).split(".")[:2])
+            title_patch = f"{lo}-{hi}" if lo != hi else lo
+    else:
+        title_patch = "unknown"
+
+    click.echo(f"[export-share] wrote {abs_zip_path}")
     click.echo(f"  games    : {total_out} (filtered from {total_in})")
     queue_summary = ", ".join(f"{q}={n}" for q, n in queues_seen.most_common())
     click.echo(f"  queues   : {queue_summary}")
     click.echo(f"  blue_wr  : {blue_wr:.3f}")
     if patches_seen:
-        sorted_patches = sorted(patches_seen.items())
-        if len(sorted_patches) <= 4:
-            patch_str = ", ".join(f"{p}={n}" for p, n in sorted_patches)
-        else:
-            patch_str = f"{sorted_patches[0][0]}...{sorted_patches[-1][0]} ({len(sorted_patches)} patches)"
-        click.echo(f"  patches  : {patch_str}")
-    click.echo(f"  file size: {size_str}")
+        click.echo(f"  patches  : {patch_display}")
+    click.echo(f"  file size: {zip_size_str} (zipped from {db_size_str})")
     click.echo("  contents : games table only - no PUUIDs, no crawl frontier")
     click.echo(f"  open dir : {folder_uri}   (Ctrl+click in most terminals)")
     click.echo("")
-    if size_bytes > 24 * 1024 * 1024:
-        click.echo(f"WARNING: file is {size_str}; GitHub Issue attachments cap at 25MB.")
+    if zip_size > 24 * 1024 * 1024:
+        click.echo(f"WARNING: zip is {zip_size_str}; GitHub Issue attachments cap at 25MB.")
         click.echo("Consider exporting per-patch (e.g. --patch-prefix 16.10) and submitting multiple files.")
+        click.echo("")
+    if len(patches_seen) >= 5:
+        click.echo(f"NOTE: this export spans {len(patches_seen)} patches. The tier list is patch-sensitive -")
+        click.echo("consider re-running with --patch-prefix 16.10 (or current patch) to get a cleaner signal.")
         click.echo("")
 
     if auto_issue or print_issue_url:
-        if patches_seen:
-            top_patch = max(patches_seen.items(), key=lambda kv: kv[1])[0]
-            short_patch = ".".join(str(top_patch).split(".")[:2]) or "unknown"
-        else:
-            short_patch = "unknown"
-        issue_title = f"[data] {short_patch} - {total_out} games"
+        issue_title = f"[data] {title_patch} - {total_out} games"
         body_lines = [
             "<!-- Auto-generated by `export-share --auto-issue` -->",
             "",
@@ -1568,16 +1607,17 @@ def export_share(
             f"blue_wr  : {blue_wr:.3f}",
         ]
         if patches_seen:
-            body_lines.append(f"patches  : {patch_str}")
+            body_lines.append(f"patches  : {patch_display}")
         body_lines += [
-            f"file size: {size_str}",
+            f"file size: {zip_size_str} (zipped from {db_size_str})",
             "```",
             "",
             "## Attach your file",
             "",
-            f"**Drag-and-drop `{abs_out_path.name}` into this comment box** before submitting.",
+            f"**Drag-and-drop `{abs_zip_path.name}` into this comment box** before submitting.",
+            "(GitHub rejects `.db` directly, so the file was zipped automatically.)",
             "",
-            f"File location on your machine: `{abs_out_path}`",
+            f"File location on your machine: `{abs_zip_path}`",
             "",
             "## Collection notes (optional)",
             "",
@@ -1617,10 +1657,12 @@ def export_share(
         if not opened:
             click.echo("  (no browser opened - copy the URL above manually)")
         click.echo("")
-        click.echo(f"In the browser tab: drag `{out_path.name}` into the comment box, then click Submit new issue.")
+        click.echo(f"In the browser tab: drag `{abs_zip_path.name}` into the comment box, then click Submit new issue.")
+        click.echo(f"(GitHub rejects `.db` directly - that's why the zip was created.)")
     else:
         click.echo("Next step: open a GitHub Issue using the 'Contribute Match Data' template")
-        click.echo("and attach this file. The summary above is fine to paste into the issue body.")
+        click.echo(f"and attach `{abs_zip_path.name}` (NOT the raw .db - GitHub rejects .db).")
+        click.echo("The summary above is fine to paste into the issue body.")
         click.echo("(Tip: re-run with --auto-issue to skip the manual navigation.)")
 
 
@@ -1642,6 +1684,8 @@ def verify_share(sources: tuple[Path, ...], strict: bool) -> None:
         raise click.ClickException("provide at least one share .db path")
 
     any_warning = False
+    import tempfile
+
     for src in sources:
         warnings: list[str] = []
         if not src.exists():
@@ -1649,11 +1693,38 @@ def verify_share(sources: tuple[Path, ...], strict: bool) -> None:
             any_warning = True
             continue
 
+        # Auto-extract .zip (since export-share now produces .db.zip for GitHub upload)
+        extracted_temp: Path | None = None
+        db_path = src
+        if src.suffix.lower() == ".zip":
+            try:
+                with zipfile.ZipFile(src) as zf:
+                    db_members = [n for n in zf.namelist() if n.lower().endswith(".db")]
+                    if not db_members:
+                        click.echo(f"  FAIL  {src}  (zip has no .db inside)")
+                        any_warning = True
+                        continue
+                    if len(db_members) > 1:
+                        warnings.append(f"zip_has_multiple_dbs={db_members}")
+                    member = db_members[0]
+                    tmp_dir = Path(tempfile.mkdtemp(prefix="verify_share_"))
+                    extracted_temp = tmp_dir / Path(member).name
+                    with zf.open(member) as src_f, extracted_temp.open("wb") as dst_f:
+                        dst_f.write(src_f.read())
+                    db_path = extracted_temp
+            except zipfile.BadZipFile:
+                click.echo(f"  FAIL  {src}  (corrupt zip)")
+                any_warning = True
+                continue
+
         try:
-            con = sqlite3.connect(str(src), timeout=30.0)
+            con = sqlite3.connect(str(db_path), timeout=30.0)
             con.row_factory = sqlite3.Row
         except sqlite3.Error as exc:
             click.echo(f"  FAIL  {src}  (open failed: {exc})")
+            if extracted_temp and extracted_temp.exists():
+                extracted_temp.unlink()
+                extracted_temp.parent.rmdir()
             any_warning = True
             continue
 
@@ -1775,6 +1846,12 @@ def verify_share(sources: tuple[Path, ...], strict: bool) -> None:
                     click.echo(f"        - {w}")
         finally:
             con.close()
+            if extracted_temp and extracted_temp.exists():
+                extracted_temp.unlink()
+                try:
+                    extracted_temp.parent.rmdir()
+                except OSError:
+                    pass
 
     if strict and any_warning:
         sys.exit(1)

@@ -68,14 +68,16 @@ python scripts/lcu_collector.py status
 **步驟 2 — 匯出 + 自動開 Issue**
 
 ```powershell
-python scripts/lcu_collector.py export-share --queue 2400 --auto-issue
+python scripts/lcu_collector.py export-share --queue 2400 --patch-prefix 16.10 --auto-issue
 ```
 
 這一行會：
-1. 產出 `data/share/share_<時間戳>.db`（**只含 games 表，無 PUUID**）
+1. 產出 `data/share/share_<時間戳>.db.zip`（**只含 games 表，無 PUUID；自動 zip 因為 GitHub 不收 `.db`**）
 2. **自動開瀏覽器**到 GitHub Issue 頁，title 和摘要全部 pre-fill 好
 
-接下來在瀏覽器分頁裡 **把 `.db` 檔拖進留言框** → 按 **Submit new issue** 就完成了。
+接下來在瀏覽器分頁裡 **把 `.db.zip` 檔拖進留言框** → 按 **Submit new issue** 就完成了。
+
+> 為什麼帶 `--patch-prefix 16.10`：tier list 是 patch-sensitive，混 patch 會稀釋訊號。你可以改成當前 patch（例 `16.11`）。不加會把所有歷史 patch 都送，腳本會印警告。
 
 > ⚠ **PowerShell 注意**：不能用 bash 的 `\` 換行。要嘛整段貼成一行，要嘛把 `\` 換成 backtick `` ` ``（且行尾不能有空白）。
 >
