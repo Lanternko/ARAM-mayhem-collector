@@ -1452,7 +1452,18 @@ def export_share(
     Issue using the "Contribute Match Data" template.
     """
     if not src_db.exists():
-        raise click.ClickException(f"source database not found: {src_db}")
+        cwd_abs = Path.cwd().resolve()
+        db_abs = src_db.resolve() if src_db.is_absolute() else (cwd_abs / src_db).resolve()
+        raise click.ClickException(
+            "no games database to export from.\n\n"
+            f"  looked for : {db_abs}\n"
+            f"  current dir: {cwd_abs}\n\n"
+            "Most likely cause: you haven't collected any games yet.\n"
+            "Run this first (with League client open in the background):\n\n"
+            "  python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 "
+            "--max-players 1000 --opgg-tier platinum --opgg-tier gold\n\n"
+            "Then re-run export-share. Or, if your DB lives elsewhere, pass --db <path-to-games.db>."
+        )
 
     if out_path is None:
         timestamp = time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
