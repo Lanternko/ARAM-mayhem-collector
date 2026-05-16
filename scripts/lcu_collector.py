@@ -1415,6 +1415,266 @@ def merge_db(out_db: Path, globs: tuple[str, ...], vacuum: bool, sources: tuple[
         dst_con.close()
 
 
+@cli.command("export-share")
+@click.option("--db", "src_db", default=DEFAULT_DB, type=click.Path(path_type=Path),
+              show_default=True, help="Source SQLite database (your local games.db)")
+@click.option("--out", "out_path", default=None, type=click.Path(path_type=Path),
+              help="Output path. Defaults to data/share/share_<utc>.db")
+@click.option("--queue", multiple=True, type=int, default=(2400,),
+              show_default=True, help="Queue IDs to include (repeatable). Default is Mayhem only.")
+@click.option("--patch-prefix", multiple=True, default=(), show_default=True,
+              help="Optional patch prefix filters such as 16.10 (repeatable). Empty = all patches.")
+def export_share(src_db: Path, out_path: Path | None, queue: tuple[int, ...], patch_prefix: tuple[str, ...]) -> None:
+    """Export a PUUID-free SQLite snapshot suitable for sharing publicly.
+
+    Output contains ONLY the `games` table (no crawl_seen / crawl_queue / riot_id_bridge).
+    The games table itself stores no PUUIDs - just game_id, queue, patch, the 10 champion
+    IDs by side, augments per champion, and win flag. Attach the output file to a GitHub
+    Issue using the "Contribute Match Data" template.
+    """
+    if not src_db.exists():
+        raise click.ClickException(f"source database not found: {src_db}")
+
+    if out_path is None:
+        timestamp = time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
+        out_path = Path("data/share") / f"share_{timestamp}.db"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+
+    queue_filter = set(queue)
+    patch_filters = tuple(patch_prefix)
+
+    src_con = sqlite3.connect(str(src_db), timeout=30.0)
+    dst_con = sqlite3.connect(str(out_path), timeout=30.0)
+    try:
+        if not _table_exists(src_con, "games"):
+            raise click.ClickException(f"source DB has no games table: {src_db}")
+        _ensure_games_schema(dst_con)
+
+        total_in = 0
+        total_out = 0
+        blue_wins_total = 0
+        patches_seen: Counter[str] = Counter()
+        queues_seen: Counter[int] = Counter()
+        for rows in _iter_game_rows(src_con, chunk_size=2000):
+            total_in += len(rows)
+            batch: list[tuple] = []
+            for row in rows:
+                queue_id = row[1]
+                patch_str = row[2]
+                if queue_filter and queue_id not in queue_filter:
+                    continue
+                if patch_filters and not any(str(patch_str).startswith(p) for p in patch_filters):
+                    continue
+                batch.append(row)
+                patches_seen[str(patch_str)] += 1
+                queues_seen[int(queue_id)] += 1
+                blue_wins_total += int(row[5] or 0)
+            if batch:
+                dst_con.executemany(_GAMES_INSERT_SQL, batch)
+                total_out += len(batch)
+        dst_con.commit()
+    finally:
+        src_con.close()
+        dst_con.close()
+
+    if total_out == 0:
+        click.echo(
+            f"[export-share] no games matched filters "
+            f"(queue={sorted(queue_filter)} patch_prefix={list(patch_filters)})  "
+            f"scanned={total_in}"
+        )
+        if out_path.exists():
+            out_path.unlink()
+        sys.exit(1)
+
+    blue_wr = blue_wins_total / total_out
+    size_bytes = out_path.stat().st_size
+    if size_bytes < 1024 * 1024:
+        size_str = f"{size_bytes / 1024:.1f}KB"
+    else:
+        size_str = f"{size_bytes / (1024 * 1024):.2f}MB"
+
+    click.echo(f"[export-share] wrote {out_path}")
+    click.echo(f"  games    : {total_out} (filtered from {total_in})")
+    queue_summary = ", ".join(f"{q}={n}" for q, n in queues_seen.most_common())
+    click.echo(f"  queues   : {queue_summary}")
+    click.echo(f"  blue_wr  : {blue_wr:.3f}")
+    if patches_seen:
+        sorted_patches = sorted(patches_seen.items())
+        if len(sorted_patches) <= 4:
+            patch_str = ", ".join(f"{p}={n}" for p, n in sorted_patches)
+        else:
+            patch_str = f"{sorted_patches[0][0]}...{sorted_patches[-1][0]} ({len(sorted_patches)} patches)"
+        click.echo(f"  patches  : {patch_str}")
+    click.echo(f"  file size: {size_str}")
+    click.echo("  contents : games table only - no PUUIDs, no crawl frontier")
+    click.echo("")
+    click.echo("Next step: open a GitHub Issue using the 'Contribute Match Data' template")
+    click.echo("and attach this file. The summary above is fine to paste into the issue body.")
+    if size_bytes > 24 * 1024 * 1024:
+        click.echo("")
+        click.echo(f"WARNING: file is {size_str}; GitHub Issue attachments cap at 25MB.")
+        click.echo("Consider exporting per-patch (e.g. --patch-prefix 16.10) and submitting multiple files.")
+
+
+@cli.command("verify-share")
+@click.argument("sources", nargs=-1, type=click.Path(path_type=Path))
+@click.option("--strict/--no-strict", default=False, show_default=True,
+              help="Exit non-zero if any file has warnings (useful in CI)")
+def verify_share(sources: tuple[Path, ...], strict: bool) -> None:
+    """Sanity-check share-export files before merging into your local DB.
+
+    Checks per file: schema, absence of PUUID-bearing auxiliary tables, no PUUID-like
+    fields inside participants_json, valid row contents (5+5 champ IDs, win flag, duration,
+    10 participants), blue_wr in plausible range, no duplicate game_ids, no unexpected queues.
+
+    Prints one OK / WARN line per file, with warnings listed beneath. Use --strict to make
+    this exit non-zero on any warning (suitable for scripting batched ingest).
+    """
+    if not sources:
+        raise click.ClickException("provide at least one share .db path")
+
+    any_warning = False
+    for src in sources:
+        warnings: list[str] = []
+        if not src.exists():
+            click.echo(f"  MISS  {src}  (file not found)")
+            any_warning = True
+            continue
+
+        try:
+            con = sqlite3.connect(str(src), timeout=30.0)
+            con.row_factory = sqlite3.Row
+        except sqlite3.Error as exc:
+            click.echo(f"  FAIL  {src}  (open failed: {exc})")
+            any_warning = True
+            continue
+
+        try:
+            tables = {row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            if "games" not in tables:
+                click.echo(f"  FAIL  {src}  (no games table)")
+                any_warning = True
+                continue
+
+            puuid_tables = tables & {"crawl_seen", "crawl_queue", "riot_id_bridge", "crawl_game_claims"}
+            if puuid_tables:
+                warnings.append(f"contains_puuid_tables={sorted(puuid_tables)}")
+
+            cols = _table_columns(con, "games")
+            has_participants = "participants_json" in cols
+
+            # Spot-check first participants_json row for PUUID-like fields
+            if has_participants:
+                sample = con.execute(
+                    "SELECT participants_json FROM games "
+                    "WHERE participants_json IS NOT NULL AND participants_json != '' LIMIT 1"
+                ).fetchone()
+                if sample and sample[0]:
+                    try:
+                        payload = json.loads(sample[0])
+                        forbidden = {"puuid", "summonerId", "summonerName", "riotIdGameName"}
+                        if isinstance(payload, list):
+                            for p in payload:
+                                if isinstance(p, dict) and forbidden & set(p.keys()):
+                                    warnings.append("participants_contain_puuid_field")
+                                    break
+                    except Exception:
+                        warnings.append("participants_json_unparseable_sample")
+
+            total = 0
+            blue_wins_total = 0
+            queues_seen: Counter[int] = Counter()
+            bad_rows = 0
+            seen_ids: set[str] = set()
+            dupe_ids = 0
+            cursor = con.execute(
+                "SELECT game_id, queue_id, blue_champs, red_champs, blue_wins, duration_sec, "
+                + ("participants_json" if has_participants else "NULL AS participants_json")
+                + " FROM games"
+            )
+            for row in cursor:
+                total += 1
+                game_id = row["game_id"]
+                if game_id in seen_ids:
+                    dupe_ids += 1
+                else:
+                    seen_ids.add(game_id)
+
+                queues_seen[int(row["queue_id"])] += 1
+
+                blue_wins = row["blue_wins"]
+                if blue_wins not in (0, 1):
+                    bad_rows += 1
+                    continue
+                blue_wins_total += int(blue_wins)
+
+                try:
+                    blue = json.loads(row["blue_champs"])
+                    red = json.loads(row["red_champs"])
+                except Exception:
+                    bad_rows += 1
+                    continue
+                if not (isinstance(blue, list) and isinstance(red, list)
+                        and len(blue) == 5 and len(red) == 5
+                        and all(isinstance(x, int) and 1 <= x <= 9999 for x in blue + red)):
+                    bad_rows += 1
+                    continue
+
+                duration = row["duration_sec"]
+                if not isinstance(duration, int) or duration < 300:
+                    bad_rows += 1
+                    continue
+
+                if has_participants and row["participants_json"]:
+                    try:
+                        payload = json.loads(row["participants_json"])
+                    except Exception:
+                        bad_rows += 1
+                        continue
+                    if not (isinstance(payload, list) and len(payload) == 10
+                            and all(isinstance(p, dict)
+                                    and p.get("teamId") in (100, 200)
+                                    and isinstance(p.get("championId"), int)
+                                    for p in payload)):
+                        bad_rows += 1
+                        continue
+
+            if total == 0:
+                warnings.append("zero_games")
+                blue_wr = 0.0
+            else:
+                blue_wr = blue_wins_total / total
+                if not (0.40 <= blue_wr <= 0.60):
+                    warnings.append(f"blue_wr_out_of_range={blue_wr:.3f}")
+                if bad_rows:
+                    warnings.append(f"bad_rows={bad_rows}")
+                if dupe_ids:
+                    warnings.append(f"duplicate_game_ids={dupe_ids}")
+                unknown_queues = {q for q in queues_seen if q not in (450, 2400)}
+                if unknown_queues:
+                    warnings.append(f"unexpected_queues={sorted(unknown_queues)}")
+
+            tag = "OK  " if not warnings else "WARN"
+            queue_str = ",".join(f"{q}={n}" for q, n in queues_seen.most_common()) or "-"
+            click.echo(
+                f"  {tag}  {src}  games={total}  blue_wr={blue_wr:.3f}  queues={queue_str}"
+            )
+            if warnings:
+                any_warning = True
+                for w in warnings:
+                    click.echo(f"        - {w}")
+        finally:
+            con.close()
+
+    if strict and any_warning:
+        sys.exit(1)
+
+
 @cli.command("seed-opgg")
 @click.option("--tier", default="diamond", show_default=True,
               help="Leaderboard tier to scrape from OPGG, e.g. gold / platinum / diamond")

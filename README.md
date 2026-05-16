@@ -39,33 +39,35 @@ Riot 公開 API 從 patch 14.x 開始**整場移除 Mayhem (queueId 2400)**，de
 
 ## 資料如何蒐集（想貢獻資料看這）
 
-跑本機 collector：
+**最常見情況：你一個人用一個帳號**，跑 collector 累積到 `data/lcu/games.db`。
 
 ```powershell
-# 1. 安裝
+# 1. 安裝（一次性）
 git clone https://github.com/Lanternko/ARAM-Mayhem-Database.git
 cd ARAM-Mayhem-Database
 python -m pip install -e .
 
 # 2. 打開 League 客戶端（不需要在玩，只要客戶端在線即可）
 
-# 3. 啟動 collector（手動 snowball）
-python scripts/lcu_collector.py snowball \
-    --target-games 500 \
-    --max-players 1000 \
-    --games-per-player 4 \
-    --seed-ladder \
-    --seed-apex
+# 3. 跑 collector（整段貼成一行，不要按 Enter 分行）
+python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold
 
 # 4. 查目前蒐集多少場
 python scripts/lcu_collector.py status
-
-# 5. 合併別人的 db（不同帳號跑的）
-python scripts/lcu_collector.py merge-db \
-    --out-db data/lcu/games_merged.db \
-    data/lcu/games_account_a.db data/lcu/games_account_b.db
 ```
 
+> **PowerShell 注意**：不能用 bash 的 `\` 換行。要嘛整段貼成一行，要嘛把 `\` 換成 backtick `` ` ``（且行尾不能有空白）。
+
+### 想把自己收的資料貢獻到公開 tier list？
+
+跑完 collector 後一行匯出 PUUID-free 的分享檔，到 [Issues 頁面](https://github.com/Lanternko/ARAM-Mayhem-Database/issues/new/choose) 選 "Contribute Match Data" template 附檔即可：
+
+```powershell
+python scripts/lcu_collector.py export-share --queue 2400
+# → data/share/share_<時間戳>.db （只含 games 表，無 PUUID）
+```
+
+完整貢獻流程、為什麼這樣設計、維護者怎麼合資料：見 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 詳細 collector 文件見 [`CLAUDE.md`](CLAUDE.md) 的 LCU Collector 節。
 
 ---

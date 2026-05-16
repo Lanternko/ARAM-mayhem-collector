@@ -21,6 +21,8 @@ Repo 名留 `aram-winrate-nn` 是歷史包袱，**所有訓練 / tier list / 推
 - 深度技術決策見 `PLAN.md`（v3，已經 Codex review）；部署流程見 `.claude/skills/deploy-tier-list/SKILL.md`
 
 ## Commands
+> 範例使用 bash `\` 換行。**PowerShell 改用 backtick `` ` ``（行尾不能有空白）**，或整段貼成一行 — `\` 在 PS 不是換行符會直接報 `unexpected extra argument`。
+
 ```bash
 # 安裝（editable，每次加新 entry point 後要重跑）
 python -m pip install -e .
