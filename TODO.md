@@ -77,6 +77,11 @@ All 6 sanity tests PASS (see `scripts/sanity_tests.py`):
 - **Patch embedding at 2 patches** — adds noise > signal. Revisit at 4+ patches.
 - **Pairwise LR (172 + 14,706 features) for full-corpus prediction acc** — best C collapses all pair weights to 0; no acc gain. Revisit at 50k+.
   - **BUT** anchor-conditional synergy (`scripts/synergy_lift.py`) DOES surface significant pair effects for specific team queries — the trick is to ask the *narrow* question (given THIS team, which pair is best) instead of the *broad* one (rank all pairs in corpus).
+
+- **NN-based synergy ranking (`scripts/synergy_lift_nn.py`) for "which 5th pick has best chemistry"** — trains DeepSetsSolo on 30k mirror, queries P(win | team + X) − P(win | random + X). Result: NN smooths champion-specific quirks into role-based recommendations (tanks, sustain, ADC) and **disagrees with conditional-WR stats on direction for unusual pairs** (e.g. Diana: stats says −9pp drag, NN says +9.7pp boost).
+  - **Verdict**: NN is 350× slower (~5 min train + 10s score vs 0.85s pure stats) AND **less accurate for specific chemistry** — its smoothing kills the empirical signals that the user wants. Stats wins for "fun pick" use case at this data scale.
+  - NN's role-based output (Maokai / Alistar / Soraka for our test comp) is intuitive but generic — not the data-driven quirks (Kindred / Ambessa / Aurora) that conditional WR surfaces.
+  - Only **Aphelios** appears in both methods' top 6 — that's the cross-validated "safe synergy" pick.
 - **Token-masking SSL** — pretext task ("predict masked champion") learns co-occurrence ≠ win signal. Target misaligned.
 - **Apex / ladder / riot-tier seed families** — verified dead (per CLAUDE.md, 0 transitive captures).
 
