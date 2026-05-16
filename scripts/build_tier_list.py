@@ -228,6 +228,17 @@ AUGMENT_NAME_OVERRIDES: dict[int, str] = {
     1349: "最終型態",
 }
 
+# Some tooltips contain spell-slot placeholders like "your @SpellName@ gains
+# @Value@ ability haste".  Our generic cleaner intentionally collapses opaque
+# numeric tokens to `[數值]`, but for Bread-and-* augments that also erases the
+# Q/W/E slot and makes the tooltip misleading.  Override only the affected
+# descriptions with the actual spell slot wording shown in-game.
+AUGMENT_DESC_OVERRIDES: dict[int, str] = {
+    1103: "你的第一個基礎技能（Q）獲得[數值]技能加速。",
+    1150: "你的第二個基礎技能（W）獲得[數值]技能加速。",
+    1151: "你的第三個基礎技能（E）獲得[數值]技能加速。",
+}
+
 
 def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
     # Try zh-TW first; fall back to default (English) if the field is empty.
@@ -286,6 +297,10 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
                     by_id[aid]["desc"] = txt
         except Exception as exc:
             click.echo(f"[tierlist] WARN: augment description fetch failed: {exc}")
+
+    for aid, txt in AUGMENT_DESC_OVERRIDES.items():
+        if aid in by_id:
+            by_id[aid]["desc"] = txt
 
     return by_id
 
