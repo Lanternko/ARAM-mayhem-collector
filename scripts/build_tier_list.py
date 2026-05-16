@@ -8,7 +8,7 @@ Clicking a champion expands an inline panel below its tier-row showing the
 top-5 best and bottom-5 worst augments (by Bayesian-smoothed winrate using
 that champion's own baseline winrate as the prior), plus best/worst same-team
 teammate synergies.  A right-side panel also lets users pick 1-4 champions and
-rank recommended teammates by aggregated pairwise z-score.
+        rank recommended teammates by aggregated anchor-conditional synergy.
 
 Usage:
     python scripts/build_tier_list.py
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import re
 import sqlite3
 from collections import Counter
@@ -77,13 +78,19 @@ def assign_tier(bayes_wr: float) -> str:
 # Codex audit #2 (2026-05-17): ~50 entries — full role-chip noise cleanup.
 #   Dominant patterns: Fighter↔Tank cross-pollution, Marksman mislabeled Mage,
 #   Mage/Support & Support/Mage chip bleed. User-reviewed per-champion.
+# Codex audit #3 (2026-05-17): narrow remaining broad DDragon secondary tags.
 TAG_OVERRIDES: dict[str, list[str]] = {
     # --- Assassin ---
     # Pure burst assassins whose Fighter secondary pollutes 戰士 chip.
     "Akali":    ["Assassin"],
     "Diana":    ["Assassin"],   # AP diver; Fighter tag is a relic
     "Ekko":     ["Assassin"],
+    "Evelynn":  ["Assassin"],
     "Fizz":     ["Assassin"],
+    "Kassadin": ["Assassin"],
+    "Katarina": ["Assassin"],
+    "Leblanc":  ["Assassin"],
+    "Naafiri":  ["Assassin"],
     "Nocturne": ["Assassin"],
     "Qiyana":   ["Assassin"],
     "Rengar":   ["Assassin"],
@@ -94,23 +101,40 @@ TAG_OVERRIDES: dict[str, list[str]] = {
     "Fiora":   ["Fighter"],
     "Irelia":  ["Fighter"],
     "Jax":     ["Fighter"],
+    "Kayn":    ["Fighter"],
+    "LeeSin":  ["Fighter"],
+    "MasterYi":["Fighter"],
     "Pantheon":["Fighter"],
     "Riven":   ["Fighter"],
+    "Tryndamere":["Fighter"],
     "Vi":      ["Fighter"],
+    "Viego":   ["Fighter"],
     "XinZhao": ["Fighter"],
     "Yasuo":   ["Fighter"],
     "Yone":    ["Fighter"],
+    "Zaahen":  ["Fighter"],
     # Bruisers tagged Fighter+Tank — Tank chip is noisy for these.
     "Aatrox":   ["Fighter"],
+    "Ambessa":  ["Fighter"],
     "Camille":  ["Fighter"],
     "Darius":   ["Fighter"],
     "Garen":    ["Fighter"],
+    "Gnar":     ["Fighter"],
     "Hecarim":  ["Fighter"],
+    "Illaoi":   ["Fighter"],
+    "JarvanIV": ["Fighter"],
+    "Jayce":    ["Fighter"],
     "Kled":     ["Fighter"],
+    "MonkeyKing":["Fighter"],
+    "Mordekaiser":["Fighter"],
     "Olaf":     ["Fighter"],
+    "RekSai":   ["Fighter"],
     "Renekton": ["Fighter"],
     "Sett":     ["Fighter"],
+    "Shyvana":  ["Fighter"],
     "Trundle":  ["Fighter"],
+    "Udyr":     ["Fighter"],
+    "Urgot":    ["Fighter"],
     "Warwick":  ["Fighter"],
     "Yorick":   ["Fighter"],
     # Tank/Fighter — primary identity is Fighter in Mayhem.
@@ -120,15 +144,20 @@ TAG_OVERRIDES: dict[str, list[str]] = {
     # True frontline tanks whose Fighter secondary pollutes 戰士 chip.
     "Malphite": ["Tank"],
     "Maokai":   ["Tank"],
+    "DrMundo":  ["Tank"],
+    "KSante":   ["Tank"],
+    "Nunu":     ["Tank"],
     "Ornn":     ["Tank"],
     "Rammus":   ["Tank"],
     "Sejuani":  ["Tank"],
     "Sion":     ["Tank"],
+    "Skarner":  ["Tank"],
     "Zac":      ["Tank"],
     # AP tanks — Mage tag is misleading for role filter purposes.
     "Amumu":    ["Tank"],
     "Chogath":  ["Tank"],
     "Galio":    ["Tank"],
+    "Singed":   ["Tank"],
     # Fighter/Tank — these play as frontline tanks in Mayhem.
     "Nasus":    ["Tank"],
     "Volibear": ["Tank"],
@@ -140,23 +169,40 @@ TAG_OVERRIDES: dict[str, list[str]] = {
 
     # --- Marksman ---
     # ADCs with AP builds — Mage tag causes them to appear under 法師.
+    "Akshan":  ["Marksman"],
+    "Ashe":    ["Marksman"],
+    "Corki":   ["Marksman"],
     "Ezreal":  ["Marksman"],
+    "Jhin":    ["Marksman"],
     "Kaisa":   ["Marksman"],
     "Kayle":   ["Marksman"],   # Fighter/Support tags are completely wrong
     "KogMaw":  ["Marksman"],
+    "Lucian":  ["Marksman"],
+    "MissFortune":["Marksman"],
     "Nilah":   ["Marksman"],   # Officially Fighter/Assassin; melee ADC in practice
+    "Quinn":   ["Marksman"],
+    "Samira":  ["Marksman"],
     "Smolder": ["Marksman"],
+    "Tristana":["Marksman"],
     "Twitch":  ["Marksman"],
     "Varus":   ["Marksman"],
+    "Vayne":   ["Marksman"],
 
     # --- Mage ---
     # Poke/control mages with Support secondary — pollutes 輔助 chip.
+    "Azir":     ["Mage"],
+    "Aurora":   ["Mage"],
+    "Fiddlesticks":["Mage"],
     "Karma":    ["Mage"],
     "Lux":      ["Mage"],
+    "Mel":      ["Mage"],
     "Morgana":  ["Mage"],
+    "Nidalee":  ["Mage"],
     "Orianna":  ["Mage"],
+    "Rumble":   ["Mage"],
     "Seraphine":["Mage"],
     "Swain":    ["Mage"],      # Fighter secondary is noisy
+    "Taliyah":  ["Mage"],
     "Teemo":    ["Mage"],      # Marksman/Assassin tags; trap mage in practice
     "Zoe":      ["Mage"],
     "Zyra":     ["Mage"],
@@ -181,6 +227,9 @@ TAG_OVERRIDES: dict[str, list[str]] = {
     "Soraka":  ["Support"],
     "Yuumi":   ["Support"],
     "Zilean":  ["Support"],
+    "Ivern":   ["Support"],
+    "Milio":   ["Support"],
+    "Renata":  ["Support"],
 }
 
 
@@ -407,7 +456,7 @@ def compute_winrates(
       champ_aug_records: list of dicts with champion_id, augment_id, games, wins,
                         raw_wr, smoothed_wr, lift (smoothed_wr - champ_baseline_wr)
       champ_pair_records: list of dicts with champion_id, teammate_id, games,
-                         wins, smoothed_wr, lift, delta_vs_rest, z_score
+                        wins, expected_wr, lift, delta_vs_rest, z_score
     """
     con = sqlite3.connect(str(db_path))
     if patch_prefix:
@@ -505,29 +554,42 @@ def compute_winrates(
             "lift": smoothed - baseline,
         })
 
-    # Same-team pair smoothing uses the anchor champion's own baseline winrate
-    # as the prior.  We still compute an anchor-conditional z-score vs that
-    # anchor's "all other teammates" bucket for ranking recommendations.
-    synergy_k = 40
+    # Same-team pair synergy is a residual over each champion's marginal
+    # strength.  This avoids recommending "T2+ good-stuff piles" as synergy:
+    # the pair has to beat the winrate expected from anchor + teammate strength.
+    team_rows = sum(games.values())
+    global_wr = (sum(wins.values()) / team_rows) if team_rows else 0.5
+    eps = 1e-4
+
+    def _logit(p: float) -> float:
+        p = min(max(p, eps), 1.0 - eps)
+        return math.log(p / (1.0 - p))
+
+    def _sigmoid(x: float) -> float:
+        return 1.0 / (1.0 + math.exp(-x))
+
     champ_pair_records = []
     for (cid, teammate_id), g in cp_games.items():
         w = cp_wins[(cid, teammate_id)]
         raw = w / g if g else 0.0
-        baseline = raw_wr_by_champ.get(cid, 0.5)
-        smoothed = (w + baseline * synergy_k) / (g + synergy_k)
+        anchor_wr = raw_wr_by_champ.get(cid, global_wr)
+        teammate_wr = raw_wr_by_champ.get(teammate_id, global_wr)
+        expected_wr = _sigmoid(_logit(anchor_wr) + _logit(teammate_wr) - _logit(global_wr))
 
         rest_games = games[cid] - g
         rest_wins = wins[cid] - w
+        delta_vs_expected = raw - expected_wr
+        var_pair = raw * (1 - raw) / max(g, 1)
+        var_anchor = anchor_wr * (1 - anchor_wr) / max(games[cid], 1)
+        var_teammate = teammate_wr * (1 - teammate_wr) / max(games[teammate_id], 1)
+        se = (var_pair + var_anchor + var_teammate) ** 0.5
+        z_score = (delta_vs_expected / se) if se > 0 else 0.0
+
         if rest_games > 0:
             rest_wr = rest_wins / rest_games
-            var_pair = raw * (1 - raw) / max(g, 1)
-            var_rest = rest_wr * (1 - rest_wr) / max(rest_games, 1)
-            se = (var_pair + var_rest) ** 0.5
-            z_score = ((raw - rest_wr) / se) if se > 0 else 0.0
             delta_vs_rest = raw - rest_wr
         else:
-            rest_wr = baseline
-            z_score = 0.0
+            rest_wr = anchor_wr
             delta_vs_rest = raw - rest_wr
 
         champ_pair_records.append({
@@ -536,10 +598,11 @@ def compute_winrates(
             "games": g,
             "wins": w,
             "raw_wr": raw,
-            "smoothed_wr": smoothed,
-            "baseline_wr": baseline,
+            "expected_wr": expected_wr,
+            "baseline_wr": anchor_wr,
+            "teammate_wr": teammate_wr,
             "rest_wr": rest_wr,
-            "lift": smoothed - baseline,
+            "lift": delta_vs_expected,
             "delta_vs_rest": delta_vs_rest,
             "z_score": z_score,
         })
@@ -591,10 +654,11 @@ def build_champ_synergy_index(
     *,
     min_games: int,
 ) -> dict[int, list[dict]]:
-    """Per champion, keep same-team teammate rows sorted by recommendation strength.
+    """Per champion, keep same-team teammate rows sorted by synergy lift.
 
-    Ranking key is z-score first (the main recommendation metric surfaced in
-    the UI), then smoothed lift and sample size as tie-breakers.
+    `lift` is pair WR minus the additive expectation from each champion's
+    marginal winrate.  z-score is kept as a confidence tie-breaker, not the
+    primary fit metric.
     """
     by_champ: dict[int, list[dict]] = {}
     for row in champ_pairs:
@@ -605,8 +669,8 @@ def build_champ_synergy_index(
     for cid, rows in by_champ.items():
         rows.sort(
             key=lambda r: (
-                -r["z_score"],
                 -r["lift"],
+                -r["z_score"],
                 -r["games"],
                 r["teammate_id"],
             )
@@ -644,7 +708,7 @@ def render_html(
     # during the 16.x cycle.  Make the header explicit so people don't think
     # the data is for queue 450.
     if queue_id == 2400:
-        header_title = "ARAM Mayhem 增幅勝率 Tier List"
+        header_title = "ARAM 大亂鬥"
         queue_label = "ARAM Mayhem (queueId 2400)"
     elif queue_id == 450:
         header_title = "ARAM 勝率 Tier List"
@@ -688,7 +752,8 @@ def render_html(
             {
                 "id": row["teammate_id"],
                 "g": row["games"],
-                "wr": round(row["smoothed_wr"], 4),
+                "wr": round(row["raw_wr"], 4),
+                "expected": round(row["expected_wr"], 4),
                 "lift": round(row["lift"], 4),
                 "z": round(row["z_score"], 3),
             }
@@ -895,13 +960,59 @@ def render_html(
         padding: 14px;
         box-shadow: 0 8px 24px rgba(0,0,0,0.22);
     }
+    .side-panel.is-modal-open {
+        display: block;
+    }
     .side-panel.is-hidden {
         display: none;
+    }
+    .side-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
     }
     .side-head h2 {
         margin: 0 0 4px;
         font-size: 16px;
         font-weight: 600;
+    }
+    .side-close,
+    .rec-fab {
+        border: 1px solid #30363d;
+        background: #1b2030;
+        color: #e6e8eb;
+        font-family: inherit;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .side-close {
+        display: none;
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        line-height: 1;
+        flex-shrink: 0;
+    }
+    .rec-fab {
+        display: none;
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        z-index: 40;
+        min-height: 46px;
+        padding: 0 16px;
+        border-radius: 999px;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.36);
+    }
+    .rec-fab:not(.is-hidden) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
     }
     .side-sub {
         color: #9aa0a6;
@@ -1558,6 +1669,7 @@ def render_html(
        cramped on most phones. */
     @media (max-width: 700px) {
         body { padding: 18px 10px 40px; }
+        body.rec-modal-open { overflow: hidden; }
         h1 { font-size: 18px; }
         .subtitle { font-size: 12px; }
         /* Header stacks: title row, then GitHub button below at full width. */
@@ -1575,7 +1687,29 @@ def render_html(
             flex-wrap: wrap;
         }
         .tool-btn { min-height: 36px; }
-        .side-panel { padding: 12px; }
+        .side-panel {
+            position: fixed;
+            z-index: 60;
+            left: 12px;
+            right: 12px;
+            top: 56px;
+            bottom: 18px;
+            overflow: auto;
+            padding: 14px;
+            border-radius: 14px;
+            box-shadow: 0 22px 60px rgba(0,0,0,0.58);
+        }
+        body.rec-modal-open::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            z-index: 55;
+            background: rgba(5, 8, 13, 0.72);
+        }
+        .side-close { display: inline-flex; }
+        .rec-fab { display: none; }
+        .rec-fab:not(.is-hidden) { display: inline-flex; }
+        .side-sub { font-size: 11px; }
         .pick-slots { gap: 6px; }
         .search { max-width: none; min-width: 0; }
         /* Tier heading slimmer; pill stays inline. */
@@ -1616,6 +1750,8 @@ def render_html(
     .chip:focus-visible,
     .gh-star:focus-visible,
     .tool-btn:focus-visible,
+    .side-close:focus-visible,
+    .rec-fab:focus-visible,
     .pick-chip:focus-visible,
     .rec-row:focus-visible,
     .search:focus-visible,
@@ -1655,7 +1791,7 @@ def render_html(
     og_desc = (
         f"基於 {total_games:,} 場 LCU 抓取的 {queue_label} 對戰，"
         "每位英雄分別給出最佳 / 最差的 augment、同隊搭檔組合，"
-        "並支援 1~4 英雄的 z-score 推薦。"
+        "並支援 1~4 英雄的 residual 相性推薦。"
     )
 
     meta_lines: list[str] = []
@@ -1721,7 +1857,7 @@ def render_html(
     parts.append(f"<h1>{header_title}</h1>")
     parts.append(
         f"<div class='subtitle'>"
-        f"{short_patch} · {date_str} ({total_games:,} games) · "
+        f"{short_patch} · {date_str} ({total_games:,} games)<br>"
         "點擊英雄看 augment / 搭檔；右側可選 1~4 隻英雄看推薦"
         f"</div>"
     )
@@ -1755,7 +1891,7 @@ def render_html(
     parts.append("<div class='filter-tools'>")
     parts.append(
         '<button class="tool-btn" id="recommend-mode" type="button" '
-        'aria-pressed="false">選角推薦</button>'
+        'aria-pressed="false">選擇你的隊友：關</button>'
     )
     parts.append(
         '<button class="tool-btn ghost" id="clear-picks" type="button">清空選取</button>'
@@ -1879,14 +2015,20 @@ def render_html(
         "<aside class='side-panel' id='side-panel'>"
         "<div class='side-head'>"
         "<div>"
-        "<h2>組合推薦</h2>"
-        "<div class='side-sub'>同隊兩兩組合，優先看相性分數（平均 z-score 並考慮覆蓋率）。先開啟「選角推薦」，再從左側選 1~4 隻英雄。</div>"
+        "<h2>推薦組合排行</h2>"
+        "<div class='side-sub'>"
+        "Residual：實際同隊勝率減掉兩隻英雄單體強度的預期勝率。<br>"
+        "z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>"
+        "先開啟「選擇你的隊友」，再從左側選 1~4 隻英雄。"
         "</div>"
+        "</div>"
+        "<button class='side-close' id='side-close' type='button' aria-label='關閉推薦組合'>×</button>"
         "</div>"
         "<div class='pick-slots' id='pick-slots'></div>"
         "<div class='pick-note' id='pick-note'></div>"
         "<div class='rec-list' id='rec-list'></div>"
         "</aside>"
+        "<button class='rec-fab is-hidden' id='rec-fab' type='button'>看推薦組合</button>"
     )
     parts.append("</div>")  # /app-shell
 
@@ -1963,14 +2105,15 @@ def render_html(
             const name = mate ? mate.name : ('#' + entry.id);
             const image = mate && mate.image ? mate.image : '';
             const zText = `${entry.z >= 0 ? '+' : ''}${entry.z.toFixed(2)}`;
-            const titleAttr = `${name} · z ${zText} · WR ${pct(entry.wr)} · ${signed(entry.lift)} · ${entry.g}場`;
+            const expectedText = entry.expected !== undefined ? ` · 預期 ${pct(entry.expected)}` : '';
+            const titleAttr = `${name} · WR ${pct(entry.wr)}${expectedText} · residual ${signed(entry.lift)} · z ${zText} · ${entry.g}場`;
             return `
                 <div class="mate-card ${kind}" title="${escHtml(titleAttr)}">
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:#2a3142"></div>'}
                     <div>
                         <div class="mname">${escHtml(name)}</div>
                         <div class="mwr">${pct(entry.wr)}</div>
-                        <div class="mmeta">z ${zText} · ${signed(entry.lift)} · ${entry.g}場</div>
+                        <div class="mmeta">${signed(entry.lift)} residual · z ${zText} · ${entry.g}場</div>
                     </div>
                 </div>
             `;
@@ -2003,7 +2146,7 @@ def render_html(
             <div class="detail-section">
                 <div class="detail-section-head">
                     <h3>搭檔組合</h3>
-                    <span class="section-meta">同隊兩兩組合，依 z-score 排名，至少 ${DATA.min_synergy_games} 場</span>
+                    <span class="section-meta">同隊兩兩組合，依 residual 相性排名，至少 ${DATA.min_synergy_games} 場</span>
                 </div>
                 <div class="detail-cols">
                     <div class="detail-col best">
@@ -2023,6 +2166,7 @@ def render_html(
     const MAX_TEAM_PICKS = 4;
     let detailSelected = null;
     let recommendMode = false;
+    let recModalOpen = false;
     let teamPicks = [];
     let pickNotice = '';
 
@@ -2089,15 +2233,15 @@ def render_html(
                 ...row,
                 full: row.coverage === want,
                 coverageRatio: row.coverage / want,
-                fitScore: row.zSum / want,
+                fitScore: row.liftSum / want,
                 zAvg: row.zSum / row.coverage,
                 liftAvg: row.liftSum / row.coverage,
                 wrAvg: row.wrSum / row.coverage,
             }))
             .sort((a, b) =>
                 b.fitScore - a.fitScore ||
-                b.zAvg - a.zAvg ||
                 b.liftAvg - a.liftAvg ||
+                b.zAvg - a.zAvg ||
                 Number(b.full) - Number(a.full) ||
                 b.coverage - a.coverage ||
                 b.minGames - a.minGames
@@ -2107,14 +2251,23 @@ def render_html(
     function renderSidePanel() {
         const shell = document.querySelector('.app-shell');
         const panel = document.getElementById('side-panel');
+        const fab = document.getElementById('rec-fab');
         const slots = document.getElementById('pick-slots');
         const note = document.getElementById('pick-note');
         const recList = document.getElementById('rec-list');
         if (!shell || !panel || !slots || !note || !recList) return;
 
         const showPanel = recommendMode && teamPicks.length > 0;
-        shell.classList.toggle('with-side-panel', showPanel);
-        panel.classList.toggle('is-hidden', !showPanel);
+        const isMobile = window.matchMedia('(max-width: 700px)').matches;
+        if (!showPanel || !isMobile) recModalOpen = false;
+        shell.classList.toggle('with-side-panel', showPanel && !isMobile);
+        document.body.classList.toggle('rec-modal-open', showPanel && isMobile && recModalOpen);
+        panel.classList.toggle('is-modal-open', showPanel && isMobile && recModalOpen);
+        panel.classList.toggle('is-hidden', !showPanel || (isMobile && !recModalOpen));
+        if (fab) {
+            fab.classList.toggle('is-hidden', !(showPanel && isMobile && !recModalOpen));
+            fab.textContent = `看推薦組合 (${teamPicks.length})`;
+        }
         if (!showPanel) return;
 
         const chips = [];
@@ -2140,7 +2293,7 @@ def render_html(
         if (pickNotice) {
             note.textContent = pickNotice;
         } else if (!teamPicks.length) {
-            note.textContent = `最多選 ${MAX_TEAM_PICKS} 隻；推薦優先看平均 z-score，並考慮 coverage。`;
+            note.textContent = `最多選 ${MAX_TEAM_PICKS} 隻；推薦優先看平均 residual 相性，並考慮 coverage。`;
         } else if (want > 1 && !hasFull) {
             note.textContent = `目前沒有 ${want}/${want} 全覆蓋候選，以下改用部分 pair 資料排序。`;
         } else {
@@ -2161,9 +2314,9 @@ def render_html(
             const name = info ? info.name : ('#' + row.id);
             const image = info && info.image ? info.image : '';
             const coverage = `${row.coverage}/${want}`;
-            const meta = `z <span class="z">${zFmt(row.zAvg)}</span> · ${signed(row.liftAvg)} · ${coverage} · min ${row.minGames}場`;
+            const meta = `${signed(row.liftAvg)} residual · z <span class="z">${zFmt(row.zAvg)}</span> · min ${row.minGames}場（${coverage}）`;
             return `
-                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(name)} · 平均 z ${zFmt(row.zAvg)}">
+                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(name)} · 平均 residual ${signed(row.liftAvg)}">
                     <span class="rec-rank">${idx + 1}</span>
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
                     <span class="rec-main">
@@ -2177,11 +2330,12 @@ def render_html(
 
     function setRecommendMode(next) {
         recommendMode = Boolean(next);
+        if (!recommendMode) recModalOpen = false;
         const btn = document.getElementById('recommend-mode');
         if (!btn) return;
         btn.classList.toggle('active', recommendMode);
         btn.setAttribute('aria-pressed', recommendMode ? 'true' : 'false');
-        btn.textContent = recommendMode ? '選角推薦：開' : '選角推薦';
+        btn.textContent = recommendMode ? '選擇你的隊友：開' : '選擇你的隊友：關';
     }
 
     function openDetailForChamp(champ) {
@@ -2239,6 +2393,18 @@ def render_html(
     }
 
     document.addEventListener('click', (ev) => {
+        const fabBtn = ev.target.closest('#rec-fab');
+        if (fabBtn) {
+            recModalOpen = true;
+            renderSidePanel();
+            return;
+        }
+        const sideClose = ev.target.closest('#side-close');
+        if (sideClose) {
+            recModalOpen = false;
+            renderSidePanel();
+            return;
+        }
         const modeBtn = ev.target.closest('#recommend-mode');
         if (modeBtn) {
             setRecommendMode(!recommendMode);
@@ -2264,6 +2430,8 @@ def render_html(
         }
         const recRow = ev.target.closest('.rec-row');
         if (recRow) {
+            recModalOpen = false;
+            renderSidePanel();
             openDetailByCid(recRow.getAttribute('data-cid'));
             return;
         }
@@ -2282,9 +2450,10 @@ def render_html(
     // champ on the new layout.
     let resizeT = null;
     window.addEventListener('resize', () => {
-        if (!detailSelected) return;
         clearTimeout(resizeT);
         resizeT = setTimeout(() => {
+            renderSidePanel();
+            if (!detailSelected) return;
             const champ = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
             if (!champ) return;
             const host = champ.closest('.tier-block').querySelector('.detail-host');
@@ -2362,6 +2531,11 @@ def render_html(
     // tabindex="0").  Preventing default on Space stops the page from
     // scrolling.
     document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape' && recModalOpen) {
+            recModalOpen = false;
+            renderSidePanel();
+            return;
+        }
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         const t = ev.target;
         if (!t || !t.classList) return;
