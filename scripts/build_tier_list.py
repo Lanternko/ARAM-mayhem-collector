@@ -2177,7 +2177,7 @@ def render_html(
 
     og_patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
     og_title = f"{header_title}資料庫"
-    og_desc = f"{og_patch_label}｜英雄 x 海克斯勝率、搭檔與組隊推薦 by路燈"
+    og_desc = f"{og_patch_label}｜英雄 x 海克斯勝率、搭檔與組隊推薦&#10;by 路燈"
 
     meta_lines: list[str] = []
     meta_lines.append("<meta charset='utf-8'>")
