@@ -1,4 +1,4 @@
-<!-- lines: 146 -->
+<!-- lines: 122 -->
 # aram-winrate-nn — ARAM 英雄組合勝率預測 NN，Python / PyTorch
 
 ## Why
@@ -55,14 +55,14 @@ python scripts/lcu_collector.py collect --queue 2400  # Mayhem only
 
 python scripts/lcu_collector.py status           # see how many games captured
 python scripts/lcu_collector.py metrics          # record growth / speed / seed-efficiency snapshots
-python scripts/lcu_collector.py snowball --target-games 500 --max-players 200
-python scripts/lcu_collector.py snowball --target-games 5000 --max-players 5000 --games-per-player 6 --seed-ladder --seed-apex
-python scripts/lcu_collector.py snowball --target-games 5000 --max-players 5000 --games-per-player 6 --seed-riot-tier --riot-tier GOLD --riot-page-limit 3
-python scripts/lcu_collector.py snowball-workers --workers 3 --target-games 5000 --max-players 5000 --games-per-player 4 --seed-ladder --seed-apex
-python scripts/lcu_collector.py snowball-workers --workers 8 --target-games 5000 --max-players 5000 --games-per-player 4 --seed-riot-tier --riot-tier GOLD --riot-page-limit 3
-python scripts/lcu_collector.py seed-opgg --tier diamond --region tw --pages 2 --topn 200 --out data/seeds/opgg_tw.txt
+
+# Default TW Mayhem path: OPGG/manual Riot ID seeding.  See Stall Playbook before using ladder/apex/riot-tier.
+python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
+python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
+python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier diamond --tier emerald --tier platinum --tier gold --pages-per-tier 80 --topn-total 0 --out data/seeds/opgg_tw.txt
-python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 5000 --max-players 5000
+python scripts/lcu_collector.py snowball-workers --workers 3 --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 5000 --max-players 5000 --games-per-player 4
+python scripts/lcu_collector.py family-stats --queue 2400
 python scripts/lcu_collector.py snowball --db data/lcu/games_account_a.db --target-games 5000 --max-players 5000
 python scripts/lcu_collector.py snowball --db data/lcu/games_account_b.db --target-games 5000 --max-players 5000
 python scripts/lcu_collector.py merge-db --out-db data/lcu/games_merged.db data/lcu/games_account_a.db data/lcu/games_account_b.db
@@ -72,7 +72,7 @@ python scripts/lcu_collector.py export --out data/raw/lcu_games.parquet
 python scripts/lcu_collector.py export --queue 2400 --out data/raw/mayhem_games.parquet
 ```
 
-`--seed-riot-tier` 會先用 Riot `account-v1 by-puuid` 轉成 `GameName#TagLine`，再用 LCU `/lol-summoner/v2/summoners/names` 橋接成 36-char LCU puuid；這條路可行，但 seed 速度會比 friend / apex 慢。
+OPGG path（`seed-opgg-plan` → `--seed-riot-id-file`）是 TW Mayhem 目前預設 seed strategy。`--seed-ladder` / `--seed-apex` / `--seed-riot-tier` 只用來在換 region 或大版本後重驗 ROI；平常不要放進 quick-start。
 
 LCU retains only the **last ~20 games**.  Run the collector every session or you'll miss games.
 `snowball` 會從 self / friends / discovered participants 擴張；**exact match dedupe 一律用 `game_id`**，不要用 10 人英雄組合作唯一鍵。
@@ -89,7 +89,8 @@ Database: `data/lcu/games.db` (SQLite) — safe to interrupt and resume.
 - `metrics` 若出現 `Mayhem +0`、`current_patch +0`，但 `done_delta` 持續增加，代表 crawler 活著但目前 seed family 已低產值，不要只看 worker 是否存在。
 - `recent-active reseed` 若能短暫把 queue 打開、但 log 幾乎整排都是 `source=match` + `target_games=0`，代表目前 active subgraph 已吃乾，應換 seed family 而不是重複 recent-active。
 - `seed-opgg-plan --resume` 只有在 `data/seeds/opgg_tw_state.json` 與 `data/seeds/opgg_tw_history.jsonl` 都前進時，才算成功 refresh；若 `manual_riot_id seed progress` 反覆出現 `resolved=0 / enqueued=0`，視為目前 OPGG page window 已耗盡。
-- `apex` / `ladder` 即使能灌回很多 LCU puuid，也可能是低價值 seed；若 log 長時間是 `source=apex` + `target_games=0`，不要把它誤判成 frontier 重新活化。
+- `apex` / `ladder` / `riot_tier` 是 TW Mayhem 上**已驗證的 dead seed family**（2026-05-15 量測：合計 2,890 done puuids、0 transitive captures）；`snowball` 別再花 LCU bandwidth 跑這幾個 root，除非換 region 或大版本後再重驗。用 `python scripts/lcu_collector.py family-stats --queue 2400` 隨時看當前 per-family ROI。
+- `manual_riot_id`（OPGG）**是** productive seed family — 同一次量測 199 captures / 2,385 puuids、blue_wr=0.528。**舊** log 看到的「manual yield=0」其實是 attribution bug（transitive captures 被歸到 immediate `match` source 而非 root family），已於 `crawl_seen.seed_family` 修；別根據舊結論判 OPGG seed 沒用。
 - `suggested players` 是下一個高價值 seed family，但只在 `gameflow phase=Lobby` 時存在；若 phase=`None` 且 `suggested_players=0`，下一個最有價值的 move 是使用者先進 lobby。
 - LCU 所謂「憑證過期」通常不是 cert 真過期，而是 League 重啟後 `port/token` 換掉或 `/lol-*` 尚未 ready；先重抓 credentials 與 `current_summoner`，不要先怪 cert。
 

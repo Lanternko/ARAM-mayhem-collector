@@ -1,4 +1,4 @@
-<!-- lines: 132 -->
+<!-- lines: 112 -->
 # aram-winrate-nn — ARAM 英雄組合勝率預測 NN，Python / PyTorch
 
 ## Why
@@ -60,26 +60,24 @@ python scripts/lcu_collector.py collect --queue 2400  # Mayhem only
 
 python scripts/lcu_collector.py status           # see how many games captured
 python scripts/lcu_collector.py metrics          # record growth / speed / seed-efficiency snapshots
-python scripts/lcu_collector.py snowball --target-games 500 --max-players 200
-python scripts/lcu_collector.py snowball --target-games 5000 --max-players 5000 --games-per-player 6 --seed-ladder --seed-apex
-python scripts/lcu_collector.py snowball --target-games 5000 --max-players 5000 --games-per-player 6 --seed-riot-tier --riot-tier GOLD --riot-page-limit 3
-python scripts/lcu_collector.py snowball-workers --workers 3 --target-games 5000 --max-players 5000 --games-per-player 4 --seed-ladder --seed-apex
-python scripts/lcu_collector.py snowball-workers --workers 8 --target-games 5000 --max-players 5000 --games-per-player 4 --seed-riot-tier --riot-tier GOLD --riot-page-limit 3
-python scripts/lcu_collector.py seed-opgg --tier diamond --region tw --pages 2 --topn 200 --out data/seeds/opgg_tw.txt
+
+# Default TW Mayhem path: OPGG/manual Riot ID seeding.  See Stall Playbook before using ladder/apex/riot-tier.
+python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
+python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
+python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier diamond --tier emerald --tier platinum --tier gold --pages-per-tier 80 --topn-total 0 --out data/seeds/opgg_tw.txt
-python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 5000 --max-players 5000
+python scripts/lcu_collector.py snowball-workers --workers 3 --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 5000 --max-players 5000 --games-per-player 4
+python scripts/lcu_collector.py family-stats --queue 2400
 python scripts/lcu_collector.py snowball --db data/lcu/games_account_a.db --target-games 5000 --max-players 5000
 python scripts/lcu_collector.py snowball --db data/lcu/games_account_b.db --target-games 5000 --max-players 5000
 python scripts/lcu_collector.py merge-db --out-db data/lcu/games_merged.db data/lcu/games_account_a.db data/lcu/games_account_b.db
 python scripts/lcu_collector.py dataset --queue 2400 --patch-prefix 16.9 --topn 20 --min-games 30
 python scripts/lcu_collector.py stats --queue 2400 --patch-prefix 16.9 --out-dir data/stats/mayhem_16_9
-python scripts/lcu_collector.py family-stats --queue 2400
-python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
 python scripts/lcu_collector.py export --out data/raw/lcu_games.parquet
 python scripts/lcu_collector.py export --queue 2400 --out data/raw/mayhem_games.parquet
 ```
 
-`--seed-riot-tier` 會先用 Riot `account-v1 by-puuid` 轉成 `GameName#TagLine`，再用 LCU `/lol-summoner/v2/summoners/names` 橋接成 36-char LCU puuid；這條路可行，但 seed 速度會比 friend / apex 慢。
+OPGG path（`seed-opgg-plan` → `--seed-riot-id-file`）是 TW Mayhem 目前預設 seed strategy。`--seed-ladder` / `--seed-apex` / `--seed-riot-tier` 只用來在換 region 或大版本後重驗 ROI；平常不要放進 quick-start。
 
 LCU retains only the **last ~20 games**.  Run the collector every session or you'll miss games.
 `snowball` 會從 self / friends / discovered participants 擴張；**exact match dedupe 一律用 `game_id`**，不要用 10 人英雄組合作唯一鍵。
