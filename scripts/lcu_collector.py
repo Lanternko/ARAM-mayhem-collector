@@ -77,7 +77,8 @@ pl = _LazyPolars()
 
 
 DEFAULT_DB = Path("data/lcu/games.db")
-_OPGG_LEADERBOARD_URL = "https://op.gg/zh-tw/lol/leaderboards/tier"
+_OPGG_TIER_LEADERBOARD_URL = "https://op.gg/zh-tw/lol/leaderboards/tier"
+_OPGG_LEVEL_LEADERBOARD_URL = "https://op.gg/zh-tw/lol/leaderboards/level"
 DEFAULT_OPGG_STATE = Path("data/seeds/opgg_tw_state.json")
 DEFAULT_OPGG_HISTORY = Path("data/seeds/opgg_tw_history.jsonl")
 DEFAULT_METRICS_HISTORY = Path("data/monitor/crawl_metrics.jsonl")
@@ -232,13 +233,25 @@ def _fetch_opgg_leaderboard_page_slugs(
     *,
     client: httpx.Client,
     region: str,
-    tier: str,
+    source: str = "tier",
+    tier: str | None = None,
     page: int,
 ) -> set[str]:
-    params = {"tier": tier.lower(), "region": region.lower(), "page": page}
-    resp = client.get(_OPGG_LEADERBOARD_URL, params=params)
+    normalized_source = source.strip().lower()
+    if normalized_source == "tier":
+        if not tier:
+            raise ValueError("tier leaderboard source requires a tier")
+        params = {"tier": tier.lower(), "region": region.lower(), "page": page}
+        url = _OPGG_TIER_LEADERBOARD_URL
+    elif normalized_source == "level":
+        params = {"region": region.lower(), "page": page}
+        url = _OPGG_LEVEL_LEADERBOARD_URL
+    else:
+        raise ValueError(f"unsupported OPGG leaderboard source: {source}")
+
+    resp = client.get(url, params=params)
     resp.raise_for_status()
-    html = resp.text
+    html = resp.content.decode("utf-8", errors="replace")
     patterns = [
         rf'/zh-tw/lol/summoners/{re.escape(region.lower())}/([^"<\\]+)',
         rf'/lol/summoners/{re.escape(region.lower())}/([^"<\\]+)',
@@ -263,32 +276,61 @@ def _console_safe(text: str) -> str:
     return text.encode("cp950", errors="backslashreplace").decode("cp950")
 
 
-def _default_opgg_state(region: str, tiers: tuple[str, ...], start_page: int) -> dict:
+def _normalize_opgg_sources(sources: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for source in sources:
+        value = str(source).strip().lower()
+        if not value:
+            continue
+        if value not in {"tier", "level"}:
+            raise click.ClickException(f"unsupported OPGG source: {source}")
+        if value not in normalized:
+            normalized.append(value)
+    return tuple(normalized or ["tier"])
+
+
+def _default_opgg_state(
+    region: str,
+    tiers: tuple[str, ...],
+    start_page: int,
+    sources: tuple[str, ...] = ("tier",),
+) -> dict:
+    normalized_sources = _normalize_opgg_sources(sources)
     normalized_tiers = [str(t).strip().lower() for t in tiers if str(t).strip()]
-    return {
+    state = {
         "region": str(region).strip().lower(),
-        "tiers": {
+    }
+    if "tier" in normalized_sources:
+        state["tiers"] = {
             tier: {"next_page": max(1, int(start_page)), "exhausted": False}
             for tier in normalized_tiers
-        },
-    }
+        }
+    if "level" in normalized_sources:
+        state["level"] = {"next_page": max(1, int(start_page)), "exhausted": False}
+    return state
 
 
-def _load_opgg_state(path: Path, region: str, tiers: tuple[str, ...], start_page: int) -> dict:
+def _load_opgg_state(
+    path: Path,
+    region: str,
+    tiers: tuple[str, ...],
+    start_page: int,
+    sources: tuple[str, ...] = ("tier",),
+) -> dict:
     if not path.exists():
-        return _default_opgg_state(region=region, tiers=tiers, start_page=start_page)
+        return _default_opgg_state(region=region, tiers=tiers, start_page=start_page, sources=sources)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return _default_opgg_state(region=region, tiers=tiers, start_page=start_page)
+        return _default_opgg_state(region=region, tiers=tiers, start_page=start_page, sources=sources)
 
-    state = _default_opgg_state(region=region, tiers=tiers, start_page=start_page)
+    state = _default_opgg_state(region=region, tiers=tiers, start_page=start_page, sources=sources)
     if not isinstance(payload, dict):
         return state
 
     state["region"] = str(payload.get("region") or state["region"]).strip().lower()
     tiers_payload = payload.get("tiers")
-    if isinstance(tiers_payload, dict):
+    if "tiers" in state and isinstance(tiers_payload, dict):
         for tier in list(state["tiers"].keys()):
             raw = tiers_payload.get(tier)
             if not isinstance(raw, dict):
@@ -303,6 +345,15 @@ def _load_opgg_state(path: Path, region: str, tiers: tuple[str, ...], start_page
                 "next_page": next_page,
                 "exhausted": bool(exhausted),
             }
+    level_payload = payload.get("level")
+    if "level" in state and isinstance(level_payload, dict):
+        next_page = level_payload.get("next_page", state["level"]["next_page"])
+        exhausted = level_payload.get("exhausted", state["level"]["exhausted"])
+        try:
+            next_page = max(1, int(next_page))
+        except Exception:
+            next_page = state["level"]["next_page"]
+        state["level"] = {"next_page": next_page, "exhausted": bool(exhausted)}
     return state
 
 
@@ -319,6 +370,60 @@ def _append_opgg_history(path: Path, event: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _walk_opgg_pages(
+    *,
+    client: httpx.Client,
+    region: str,
+    source: str,
+    bucket: str,
+    cursor_state: dict,
+    start_page: int,
+    page_window: int,
+    riot_ids: list[str],
+    seen: set[str],
+    page_hits: list[tuple[str, str, int, int]],
+    topn_total: int,
+) -> tuple[int, bool]:
+    page_start = max(1, int(cursor_state.get("next_page", max(1, start_page))))
+    page_stop = page_start + max(1, page_window)
+    total_added = 0
+    exhausted = False
+
+    for page in range(page_start, page_stop):
+        slugs = _fetch_opgg_leaderboard_page_slugs(
+            client=client,
+            region=region,
+            source=source,
+            tier=bucket if source == "tier" else None,
+            page=page,
+        )
+        if not slugs:
+            exhausted = True
+            break
+
+        added_this_page = 0
+        for slug in sorted(slugs):
+            riot_id = _normalize_opgg_profile_to_riot_id(slug)
+            if not riot_id or riot_id in seen:
+                continue
+            seen.add(riot_id)
+            riot_ids.append(riot_id)
+            added_this_page += 1
+            total_added += 1
+            if topn_total > 0 and len(riot_ids) >= topn_total:
+                break
+
+        page_hits.append((source, bucket, page, added_this_page))
+        if added_this_page == 0:
+            exhausted = True
+            break
+        cursor_state["next_page"] = page + 1
+        if topn_total > 0 and len(riot_ids) >= topn_total:
+            break
+
+    return total_added, exhausted
 
 
 def _load_jsonl_tail(path: Path, limit: int = 5) -> list[dict]:
@@ -403,6 +508,48 @@ $rows | ConvertTo-Json -Compress
             workers = []
     workers.sort(key=lambda row: row["pid"])
     return workers
+
+
+def _stop_active_snowball_workers(timeout_sec: float = 10.0) -> int:
+    workers = _find_active_snowball_workers()
+    if not workers:
+        return 0
+
+    pids = [int(worker["pid"]) for worker in workers if int(worker.get("pid") or 0) > 0]
+    stopped = 0
+    if psutil is not None:
+        procs = []
+        for pid in pids:
+            try:
+                proc = psutil.Process(pid)
+                proc.terminate()
+                procs.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        gone, alive = psutil.wait_procs(procs, timeout=timeout_sec)
+        stopped += len(gone)
+        for proc in alive:
+            try:
+                proc.kill()
+                stopped += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return stopped
+
+    if pids:
+        pid_list = ",".join(str(pid) for pid in pids)
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"{pid_list}.Split(',') | ForEach-Object {{ Stop-Process -Id ([int]$_) -Force }}",
+            ],
+            check=False,
+            timeout=max(5.0, timeout_sec),
+        )
+        stopped = len(pids)
+    return stopped
 
 
 def _collect_status_snapshot(
@@ -1897,12 +2044,18 @@ def seed_opgg(tier: str, region: str, pages: int, topn: int, out: Path, append: 
 @cli.command("seed-opgg-plan")
 @click.option("--region", default="tw", show_default=True,
               help="OPGG region slug, e.g. tw / kr / na")
+@click.option("--source", "sources", multiple=True,
+              default=("tier",),
+              show_default=True,
+              help="Leaderboard sources to walk: tier and/or level")
 @click.option("--tier", "tiers", multiple=True,
               default=("diamond", "emerald", "platinum", "gold"),
               show_default=True,
               help="Tier order to walk when refreshing seeds")
 @click.option("--pages-per-tier", default=80, show_default=True, type=int,
               help="Walk sequential pages 1..N for each tier before moving to the next tier")
+@click.option("--pages-per-source", default=None, type=int,
+              help="Pages to walk per selected source; defaults to --pages-per-tier")
 @click.option("--topn-total", default=400, show_default=True, type=int,
               help="Stop after collecting this many total Riot IDs across all tiers; use 0 for exhaustive paging")
 @click.option("--state-file", default=DEFAULT_OPGG_STATE, type=click.Path(path_type=Path),
@@ -1919,8 +2072,10 @@ def seed_opgg(tier: str, region: str, pages: int, topn: int, out: Path, append: 
               help="Append to the existing seed file instead of replacing it")
 def seed_opgg_plan(
     region: str,
+    sources: tuple[str, ...],
     tiers: tuple[str, ...],
     pages_per_tier: int,
+    pages_per_source: int | None,
     topn_total: int,
     state_file: Path,
     history_file: Path,
@@ -1929,65 +2084,77 @@ def seed_opgg_plan(
     out: Path,
     append: bool,
 ) -> None:
-    """Refresh seeds by walking leaderboard pages 1..N within each tier in priority order."""
+    """Refresh seeds by walking OPGG leaderboard pages in priority order."""
+    normalized_sources = _normalize_opgg_sources(sources)
+    page_window = max(1, pages_per_source if pages_per_source is not None else pages_per_tier)
     headers = {"User-Agent": "Mozilla/5.0"}
     riot_ids: list[str] = []
     seen: set[str] = set()
-    page_hits: list[tuple[str, int, int]] = []
+    page_hits: list[tuple[str, str, int, int]] = []
     state = _load_opgg_state(
         path=state_file,
         region=region,
         tiers=tiers,
         start_page=max(1, start_page),
-    ) if resume else _default_opgg_state(region=region, tiers=tiers, start_page=max(1, start_page))
+        sources=normalized_sources,
+    ) if resume else _default_opgg_state(
+        region=region,
+        tiers=tiers,
+        start_page=max(1, start_page),
+        sources=normalized_sources,
+    )
 
     try:
         with httpx.Client(headers=headers, timeout=20.0, follow_redirects=True) as client:
-            for tier in tiers:
-                normalized_tier = str(tier).strip().lower()
-                if not normalized_tier:
-                    continue
-                tier_state = state["tiers"].setdefault(
-                    normalized_tier,
-                    {"next_page": max(1, start_page), "exhausted": False},
-                )
-                if tier_state.get("exhausted"):
-                    continue
+            if "tier" in normalized_sources:
+                for tier in tiers:
+                    normalized_tier = str(tier).strip().lower()
+                    if not normalized_tier:
+                        continue
+                    tier_state = state["tiers"].setdefault(
+                        normalized_tier,
+                        {"next_page": max(1, start_page), "exhausted": False},
+                    )
+                    if tier_state.get("exhausted"):
+                        continue
 
-                page_start = max(1, int(tier_state.get("next_page", max(1, start_page))))
-                page_stop = page_start + max(1, pages_per_tier)
-                exhausted = False
-                for page in range(page_start, page_stop):
-                    slugs = _fetch_opgg_leaderboard_page_slugs(
+                    added, exhausted = _walk_opgg_pages(
                         client=client,
                         region=region,
-                        tier=normalized_tier,
-                        page=page,
+                        source="tier",
+                        bucket=normalized_tier,
+                        cursor_state=tier_state,
+                        start_page=start_page,
+                        page_window=page_window,
+                        riot_ids=riot_ids,
+                        seen=seen,
+                        page_hits=page_hits,
+                        topn_total=topn_total,
                     )
-                    if not slugs:
-                        exhausted = True
-                        break
-
-                    added_this_page = 0
-                    for slug in sorted(slugs):
-                        riot_id = _normalize_opgg_profile_to_riot_id(slug)
-                        if not riot_id or riot_id in seen:
-                            continue
-                        seen.add(riot_id)
-                        riot_ids.append(riot_id)
-                        added_this_page += 1
-
-                    page_hits.append((normalized_tier, page, added_this_page))
-                    if added_this_page == 0:
-                        exhausted = True
-                        break
-                    tier_state["next_page"] = page + 1
+                    tier_state["exhausted"] = exhausted
                     if topn_total > 0 and len(riot_ids) >= topn_total:
                         break
 
-                tier_state["exhausted"] = exhausted
-                if topn_total > 0 and len(riot_ids) >= topn_total:
-                    break
+            if "level" in normalized_sources and (topn_total <= 0 or len(riot_ids) < topn_total):
+                level_state = state.setdefault(
+                    "level",
+                    {"next_page": max(1, start_page), "exhausted": False},
+                )
+                if not level_state.get("exhausted"):
+                    _, exhausted = _walk_opgg_pages(
+                        client=client,
+                        region=region,
+                        source="level",
+                        bucket="level",
+                        cursor_state=level_state,
+                        start_page=start_page,
+                        page_window=page_window,
+                        riot_ids=riot_ids,
+                        seen=seen,
+                        page_hits=page_hits,
+                        topn_total=topn_total,
+                    )
+                    level_state["exhausted"] = exhausted
     except Exception as exc:
         raise click.ClickException(f"OPGG plan scrape failed: {exc}") from exc
 
@@ -1995,8 +2162,9 @@ def seed_opgg_plan(
         _save_opgg_state(state_file, state)
         _append_opgg_history(history_file, {
             "region": region,
+            "sources": list(normalized_sources),
             "tiers": list(tiers),
-            "pages_per_tier": pages_per_tier,
+            "pages_per_source": page_window,
             "topn_total": topn_total,
             "resume": resume,
             "state_file": str(state_file),
@@ -2011,23 +2179,27 @@ def seed_opgg_plan(
     _save_opgg_state(state_file, state)
     _append_opgg_history(history_file, {
         "region": region,
+        "sources": list(normalized_sources),
         "tiers": list(tiers),
-        "pages_per_tier": pages_per_tier,
+        "pages_per_source": page_window,
         "topn_total": topn_total,
         "resume": resume,
         "state_file": str(state_file),
         "out": str(out),
         "written": len(riot_ids),
         "page_hits": page_hits,
-        "cursor_after": state.get("tiers", {}),
+        "cursor_after": {
+            "tiers": state.get("tiers", {}),
+            "level": state.get("level"),
+        },
     })
     click.echo(
         f"[seed-opgg-plan] wrote {len(riot_ids)} Riot IDs to {out}  "
-        f"region={region}  tiers={list(tiers)}  pages_per_tier={pages_per_tier}  "
+        f"region={region}  sources={list(normalized_sources)}  pages_per_source={page_window}  "
         f"resume={resume}  state_file={state_file}  history_file={history_file}"
     )
-    for page_tier, page_no, page_added in page_hits:
-        click.echo(f"  [{page_tier} page {page_no}] added={page_added}")
+    for page_source, page_bucket, page_no, page_added in page_hits:
+        click.echo(f"  [{page_source}:{page_bucket} page {page_no}] added={page_added}")
     for riot_id in riot_ids[:10]:
         click.echo(f"  {_console_safe(riot_id)}")
 
@@ -2055,6 +2227,11 @@ def seed_opgg_state(state_file: Path, history_file: Path, tail: int) -> None:
             click.echo(
                 f"  {tier}: next_page={tier_state.get('next_page')}  exhausted={bool(tier_state.get('exhausted'))}"
             )
+        level_state = payload.get("level")
+        if isinstance(level_state, dict):
+            click.echo(
+                f"  level: next_page={level_state.get('next_page')}  exhausted={bool(level_state.get('exhausted'))}"
+            )
         if payload.get("updated_at"):
             click.echo(f"  updated_at={payload.get('updated_at')}")
     else:
@@ -2072,7 +2249,9 @@ def seed_opgg_state(state_file: Path, history_file: Path, tail: int) -> None:
                 continue
             click.echo(
                 f"  {item.get('logged_at')}  written={item.get('written')}  "
-                f"resume={item.get('resume')}  pages_per_tier={item.get('pages_per_tier')}"
+                f"resume={item.get('resume')}  "
+                f"sources={item.get('sources', ['tier'])}  "
+                f"pages={item.get('pages_per_source', item.get('pages_per_tier'))}"
             )
     else:
         click.echo(f"[seed-opgg-state] no history file at {history_file}")
@@ -2141,6 +2320,13 @@ def metrics(
             )
         if tier_bits:
             click.echo("  seed_cursor  " + "  ".join(tier_bits))
+    if isinstance(seed_state, dict) and isinstance(seed_state.get("level"), dict):
+        level_state = seed_state["level"]
+        click.echo(
+            "  level_cursor  "
+            f"page={level_state.get('next_page', '?')}"
+            f"{'x' if level_state.get('exhausted') else ''}"
+        )
 
     latest_seed_refresh = snapshot.get("latest_seed_refresh")
     if isinstance(latest_seed_refresh, dict):
@@ -2204,6 +2390,222 @@ def metrics(
                 f"mayhem={mayhem.get('total', 0)}  patch={mayhem.get('latest_patch') or '-'}  "
                 f"patch_games={mayhem.get('latest_patch_games', 0)}"
             )
+
+
+def _run_seed_opgg_plan_subprocess(
+    *,
+    sources: tuple[str, ...],
+    region: str,
+    tiers: tuple[str, ...],
+    pages_per_source: int,
+    topn_total: int,
+    seed_state_file: Path,
+    seed_history_file: Path,
+    seed_file: Path,
+) -> int:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "seed-opgg-plan",
+        "--region",
+        region,
+        "--pages-per-source",
+        str(max(1, pages_per_source)),
+        "--topn-total",
+        str(max(0, topn_total)),
+        "--resume",
+        "--state-file",
+        str(seed_state_file),
+        "--history-file",
+        str(seed_history_file),
+        "--out",
+        str(seed_file),
+    ]
+    for source in sources:
+        cmd.extend(["--source", source])
+    for tier in tiers:
+        cmd.extend(["--tier", tier])
+
+    result = subprocess.run(cmd, cwd=str(Path.cwd()), text=True, check=False)
+    return int(result.returncode)
+
+
+def _launch_snowball_workers_subprocess(
+    *,
+    db: Path,
+    workers: int,
+    seed_file: Path,
+    target_games: int,
+    max_players: int,
+    games_per_player: int,
+    manual_seed_pending_cap: int,
+) -> int:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "snowball-workers",
+        "--db",
+        str(db),
+        "--workers",
+        str(max(1, workers)),
+        "--seed-riot-id-file",
+        str(seed_file),
+        "--target-games",
+        str(target_games),
+        "--max-players",
+        str(max_players),
+        "--games-per-player",
+        str(max(1, games_per_player)),
+        "--manual-seed-pending-cap",
+        str(max(0, manual_seed_pending_cap)),
+    ]
+    result = subprocess.run(cmd, cwd=str(Path.cwd()), text=True, check=False)
+    return int(result.returncode)
+
+
+@cli.command("opgg-autorefresh")
+@click.option("--db", default=DEFAULT_DB, type=click.Path(path_type=Path),
+              show_default=True)
+@click.option("--seed-file", default=Path("data/seeds/opgg_tw.txt"), type=click.Path(path_type=Path),
+              show_default=True)
+@click.option("--seed-state-file", default=DEFAULT_OPGG_STATE, type=click.Path(path_type=Path),
+              show_default=True)
+@click.option("--seed-history-file", default=DEFAULT_OPGG_HISTORY, type=click.Path(path_type=Path),
+              show_default=True)
+@click.option("--region", default="tw", show_default=True)
+@click.option("--source", "sources", multiple=True, default=("tier", "level"),
+              show_default=True, help="OPGG sources to refresh when crawler is low-yield")
+@click.option("--tier", "tiers", multiple=True,
+              default=("diamond", "emerald", "platinum", "gold"),
+              show_default=True)
+@click.option("--workers", default=3, show_default=True, type=int,
+              help="Snowball worker count to keep after each refresh")
+@click.option("--interval-sec", default=180, show_default=True, type=int,
+              help="Seconds between crawler health checks")
+@click.option("--cooldown-sec", default=300, show_default=True, type=int,
+              help="Minimum seconds between OPGG refresh attempts")
+@click.option("--pending-threshold", default=20, show_default=True, type=int,
+              help="Refresh when pending+in_progress frontier is at or below this")
+@click.option("--done-window", default=50, show_default=True, type=int,
+              help="Refresh when this many players were processed without Mayhem growth")
+@click.option("--pages-per-source", default=1, show_default=True, type=int,
+              help="Small OPGG page window per source per refresh")
+@click.option("--topn-total", default=0, show_default=True, type=int,
+              help="Max Riot IDs per refresh; 0 means no explicit cap")
+@click.option("--target-games", default=50000, show_default=True, type=int)
+@click.option("--max-players", default=50000, show_default=True, type=int)
+@click.option("--games-per-player", default=4, show_default=True, type=int)
+@click.option("--manual-seed-pending-cap", default=40, show_default=True, type=int)
+@click.option("--once", is_flag=True, default=False,
+              help="Run one health check and refresh/restart if needed")
+def opgg_autorefresh(
+    db: Path,
+    seed_file: Path,
+    seed_state_file: Path,
+    seed_history_file: Path,
+    region: str,
+    sources: tuple[str, ...],
+    tiers: tuple[str, ...],
+    workers: int,
+    interval_sec: int,
+    cooldown_sec: int,
+    pending_threshold: int,
+    done_window: int,
+    pages_per_source: int,
+    topn_total: int,
+    target_games: int,
+    max_players: int,
+    games_per_player: int,
+    manual_seed_pending_cap: int,
+    once: bool,
+) -> None:
+    """Watch crawler health and refresh OPGG seeds when the frontier goes low-yield."""
+    normalized_sources = _normalize_opgg_sources(sources)
+    previous = _collect_status_snapshot(
+        db,
+        seed_state_file=seed_state_file,
+        seed_history_file=seed_history_file,
+    )
+    last_refresh_at = 0.0
+
+    click.echo(
+        f"[opgg-autorefresh] db={db}  workers={workers}  "
+        f"sources={list(normalized_sources)}  interval={interval_sec}s"
+    )
+    try:
+        while True:
+            snapshot = _collect_status_snapshot(
+                db,
+                seed_state_file=seed_state_file,
+                seed_history_file=seed_history_file,
+            )
+            frontier = snapshot.get("crawl_frontier") or {}
+            pending = int(frontier.get("pending", 0))
+            in_progress = int(frontier.get("in_progress", 0))
+            open_frontier = pending + in_progress
+            done = int(frontier.get("done", 0))
+            mayhem = int((snapshot.get("mayhem") or {}).get("total", 0))
+            previous_frontier = previous.get("crawl_frontier") or {}
+            done_delta = done - int(previous_frontier.get("done", 0))
+            mayhem_delta = mayhem - int((previous.get("mayhem") or {}).get("total", 0))
+            active_workers = len(snapshot.get("active_workers") or [])
+
+            reasons: list[str] = []
+            if active_workers == 0:
+                reasons.append("workers=0")
+            if open_frontier <= pending_threshold:
+                reasons.append(f"frontier={open_frontier}<={pending_threshold}")
+            if done_delta >= done_window and mayhem_delta <= 0:
+                reasons.append(f"low_yield done+{done_delta} mayhem+{mayhem_delta}")
+
+            now = time.time()
+            click.echo(
+                f"[opgg-autorefresh] workers={active_workers}  frontier={open_frontier}  "
+                f"done_delta={done_delta:+d}  mayhem_delta={mayhem_delta:+d}  "
+                f"{'trigger=' + ','.join(reasons) if reasons else 'ok'}"
+            )
+
+            if reasons and now - last_refresh_at >= max(0, cooldown_sec):
+                seed_file.parent.mkdir(parents=True, exist_ok=True)
+                click.echo("[opgg-autorefresh] refreshing OPGG seed file")
+                rc = _run_seed_opgg_plan_subprocess(
+                    sources=normalized_sources,
+                    region=region,
+                    tiers=tiers,
+                    pages_per_source=pages_per_source,
+                    topn_total=topn_total,
+                    seed_state_file=seed_state_file,
+                    seed_history_file=seed_history_file,
+                    seed_file=seed_file,
+                )
+                if rc == 0:
+                    stopped = _stop_active_snowball_workers()
+                    click.echo(f"[opgg-autorefresh] stopped snowball workers={stopped}")
+                    launch_rc = _launch_snowball_workers_subprocess(
+                        db=db,
+                        workers=workers,
+                        seed_file=seed_file,
+                        target_games=target_games,
+                        max_players=max_players,
+                        games_per_player=games_per_player,
+                        manual_seed_pending_cap=manual_seed_pending_cap,
+                    )
+                    if launch_rc != 0:
+                        click.echo(f"[opgg-autorefresh] worker launch failed rc={launch_rc}", err=True)
+                    last_refresh_at = now
+                else:
+                    click.echo(f"[opgg-autorefresh] seed refresh failed rc={rc}", err=True)
+                    last_refresh_at = now
+            elif reasons:
+                remain = max(0, int(cooldown_sec - (now - last_refresh_at)))
+                click.echo(f"[opgg-autorefresh] refresh suppressed by cooldown  remaining={remain}s")
+
+            previous = snapshot
+            if once:
+                break
+            time.sleep(max(10, interval_sec))
+    except KeyboardInterrupt:
+        click.echo("[opgg-autorefresh] stopped")
 
 
 # ------------------------------------------------------------------- stats ---
@@ -2779,22 +3181,31 @@ def family_stats(db: Path, queue: tuple[int, ...]) -> None:
 @click.option("--vocab", required=True,
               type=click.Path(exists=True, path_type=Path, dir_okay=False),
               help="Path to tier2_checkpoint.pt or champ_to_idx.json — used for champion vocab.")
+@click.option("--pair-stats", default=Path("models/pair_synergy_16_10.json"),
+              type=click.Path(path_type=Path, dir_okay=False),
+              help="Path to pair synergy JSON from scripts/build_pair_stats.py.")
 @click.option("--poll-interval", default=1.0, show_default=True, type=float,
               help="Seconds between LCU polls while in ChampSelect.")
 @click.option("--verbose", is_flag=True, default=False,
               help="Print per-poll diagnostic info (phase + session presence).")
-def recommend(lr_model: Path, vocab: Path, poll_interval: float, verbose: bool) -> None:
+def recommend(
+    lr_model: Path,
+    vocab: Path,
+    pair_stats: Path,
+    poll_interval: float,
+    verbose: bool,
+) -> None:
     """Real-time bench-swap recommendations during ARAM champ select.
 
-    Uses the LR baseline (strongest classifier at current data scale, see
-    aram_nn.recommend module docstring).  Opponent is unobservable in ARAM
-    champ select; ranking is opponent-invariant by construction.  Absolute
-    win probabilities are point estimates assuming an "average" opponent.
+    Uses anchor-conditional pair synergy as the primary signal, blended with
+    the LR baseline as a universal champion-strength prior.  Absolute win
+    probabilities are LR point estimates assuming an "average" opponent.
 
     Run BEFORE you queue:
         python scripts/lcu_collector.py recommend \\
             --lr-model models/tier2_mayhem/lr_model.pkl \\
-            --vocab    models/tier2_mayhem/tier2_checkpoint.pt
+            --vocab    models/tier2_mayhem/tier2_checkpoint.pt \\
+            --pair-stats models/pair_synergy_16_10.json
     """
     # Lazy imports keep the CLI startup fast for other subcommands.
     from aram_nn.lcu.client import (
@@ -2804,6 +3215,7 @@ def recommend(lr_model: Path, vocab: Path, poll_interval: float, verbose: bool) 
     from aram_nn.recommend import (
         load_lr, parse_session, session_state_hash, suggest_for_cell,
     )
+    from aram_nn.pair_synergy import load_pair_synergy
 
     creds = get_credentials()
     if not creds:
@@ -2813,6 +3225,18 @@ def recommend(lr_model: Path, vocab: Path, poll_interval: float, verbose: bool) 
     click.echo(f"[recommend] loading model from {lr_model}")
     model = load_lr(lr_model, vocab)
     click.echo(f"[recommend] vocab covers {model.n_champs} champions")
+    pair_model = None
+    if pair_stats.exists():
+        pair_model = load_pair_synergy(pair_stats)
+        click.echo(
+            f"[recommend] pair synergy rows={len(pair_model.rows):,} "
+            f"patch={pair_model.patch_prefix} min_pair={pair_model.min_pair}"
+        )
+    else:
+        click.echo(
+            f"[recommend] WARN: pair stats not found at {pair_stats}; "
+            "falling back to 30% LR score only"
+        )
 
     last_hash: tuple | None = None
     last_phase: str | None = None
@@ -2857,26 +3281,39 @@ def recommend(lr_model: Path, vocab: Path, poll_interval: float, verbose: bool) 
                 last_hash = state
 
                 suggestions = suggest_for_cell(
-                    parsed.my_team_ids, parsed.my_current_id, parsed.bench_ids, model,
+                    parsed.my_team_ids,
+                    parsed.my_current_id,
+                    parsed.bench_ids,
+                    model,
+                    pair_model,
                 )
 
                 # Clear screen + home cursor for in-place refresh.
                 click.echo("\033[2J\033[H", nl=False)
                 cur_name = id_to_name.get(parsed.my_current_id, f"#{parsed.my_current_id}")
                 click.echo(f"[champ select] cell {parsed.my_cell_id}   current: {cur_name}")
-                click.echo("               (P(win) assumes average opponent)\n")
-                click.echo(f"  {'Δ%':>7}  {'P(win)':>7}  candidate")
-                click.echo("  " + "-" * 36)
+                click.echo("               (score = 70% synergy + 30% LR; P(win) assumes average opponent)\n")
+                click.echo(f"  {'score':>7}  {'syn':>7}  {'LR':>7}  {'P(win)':>7}  candidate")
+                click.echo("  " + "-" * 62)
                 for s in suggestions:
                     name = id_to_name.get(s.champion_id, f"#{s.champion_id}")
                     tag = "keep" if s.source == "keep" else "bench"
                     if not s.is_known:
-                        click.echo(f"  {'  n/a':>7}  {'  n/a':>7}  {name} ({tag}, not in vocab)")
+                        click.echo(
+                            f"  {'  n/a':>7}  {'  n/a':>7}  {'  n/a':>7}  "
+                            f"{'  n/a':>7}  {name} ({tag}, not in vocab)"
+                        )
                         continue
-                    delta_pp = s.delta * 100.0
+                    score_pp = s.score * 100.0
+                    syn_pp = s.synergy_delta * 100.0
+                    lr_pp = s.prob_delta_lr * 100.0
                     prob_pp = s.win_prob * 100.0
-                    delta_str = f"{delta_pp:+.1f}%" if s.source != "keep" else "  —  "
-                    click.echo(f"  {delta_str:>7}  {prob_pp:5.1f}%   {name} ({tag})")
+                    score_str = f"{score_pp:+.1f}%" if s.source != "keep" else "  —  "
+                    coverage = f"{s.anchors_covered}/4"
+                    click.echo(
+                        f"  {score_str:>7}  {syn_pp:+6.1f}%  {lr_pp:+6.1f}%  "
+                        f"{prob_pp:5.1f}%   {name} ({tag}, pairs {coverage})"
+                    )
 
                 time.sleep(poll_interval)
     except KeyboardInterrupt:

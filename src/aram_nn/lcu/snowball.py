@@ -51,6 +51,7 @@ _SOURCE_FAMILY_BACKOFF_ZERO_STREAK = 25
 _SOURCE_FAMILY_BACKOFF_SEC = 45 * 60
 _MANUAL_SEED_HOT_WINDOW_HOURS = 24
 _MANUAL_SEED_WARM_WINDOW_HOURS = 72
+_LCU_UNAVAILABLE_RETRY_DELAY_MS = 60_000
 _SCHEMA_INIT_RETRY_ATTEMPTS = 12
 _SCHEMA_INIT_RETRY_SLEEP_SEC = 2.0
 
@@ -175,6 +176,8 @@ _LEGACY_MATCH_FAMILY = "legacy_match"
 _UNKNOWN_FAMILY = "unknown"
 _LCU_RIOT_ID_LOOKUP_BATCH = 10
 _RIOT_TIER_HYDRATION_DELAY_MS = 90_000
+_MANUAL_SEED_HYDRATION_DELAY_MS = 90_000
+_EMPTY_HISTORY_RETRY_LIMIT = 5
 
 
 @dataclass
@@ -1147,7 +1150,10 @@ def _enqueue_player(
     )
     con.commit()
 
-    should_requeue = int(processed) == 1 and int(discovered_match_created_ms) > int(last_crawled_match_ms)
+    should_requeue = int(processed) == 1 and (
+        int(discovered_match_created_ms) > int(last_crawled_match_ms)
+        or (source == "manual_riot_id" and int(last_crawled_match_ms) == 0)
+    )
     became_pending = _upsert_queue_row(
         con,
         puuid,
@@ -1157,7 +1163,7 @@ def _enqueue_player(
         best_game_id,
         latest_match_ms,
         requeue=should_requeue,
-        eligible_at_ms=_now_ms() + requeue_cooldown_ms if should_requeue else 0,
+        eligible_at_ms=_now_ms() + max(requeue_cooldown_ms, initial_delay_ms) if should_requeue else 0,
         seed_family=effective_family,
     )
     if should_requeue and became_pending:
@@ -1305,6 +1311,7 @@ def _mark_player_done(
     puuid: str,
     new_games_found: int,
     claimed_match_created_ms: int,
+    observed_match_created_ms: int,
     requeue_cooldown_ms: int,
 ) -> bool:
     """Finalize a claimed player.
@@ -1323,7 +1330,12 @@ def _mark_player_done(
     ).fetchone()
     latest_seen_match_ms = int(row[0]) if row else 0
     last_crawled_match_ms = int(row[1]) if row else 0
-    needs_requeue = latest_seen_match_ms > int(claimed_match_created_ms)
+    crawled_match_ms = max(
+        last_crawled_match_ms,
+        int(claimed_match_created_ms),
+        int(observed_match_created_ms),
+    )
+    needs_requeue = latest_seen_match_ms > crawled_match_ms
 
     if needs_requeue:
         eligible_at_ms = _now_ms() + max(0, requeue_cooldown_ms)
@@ -1337,7 +1349,7 @@ def _mark_player_done(
                 last_crawled_match_created_ms = ?
             WHERE puuid = ?
             """,
-            (now, new_games_found, max(last_crawled_match_ms, int(claimed_match_created_ms)), puuid),
+            (now, new_games_found, crawled_match_ms, puuid),
         )
         con.execute(
             """
@@ -1364,7 +1376,7 @@ def _mark_player_done(
             last_crawled_match_created_ms = ?
         WHERE puuid = ?
         """,
-        (now, new_games_found, max(last_crawled_match_ms, int(claimed_match_created_ms)), puuid),
+        (now, new_games_found, crawled_match_ms, puuid),
     )
     con.execute(
         """
@@ -1379,6 +1391,69 @@ def _mark_player_done(
     )
     con.commit()
     return False
+
+
+def _defer_player_for_history_hydration(
+    con: sqlite3.Connection,
+    puuid: str,
+    *,
+    delay_ms: int = _MANUAL_SEED_HYDRATION_DELAY_MS,
+) -> bool:
+    row = con.execute(
+        "SELECT process_count FROM crawl_seen WHERE puuid = ?",
+        (puuid,),
+    ).fetchone()
+    process_count = int(row[0]) if row else 0
+    if process_count >= _EMPTY_HISTORY_RETRY_LIMIT:
+        return False
+
+    now = _utc_now()
+    con.execute(
+        """
+        UPDATE crawl_seen
+        SET processed = 0,
+            process_count = process_count + 1,
+            last_crawled_at = ?
+        WHERE puuid = ?
+        """,
+        (now, puuid),
+    )
+    con.execute(
+        """
+        UPDATE crawl_queue
+        SET status = 'pending',
+            claimed_by = NULL,
+            claimed_at_ms = 0,
+            eligible_at_ms = ?,
+            updated_at = ?
+        WHERE puuid = ?
+        """,
+        (_now_ms() + max(0, delay_ms), now, puuid),
+    )
+    con.commit()
+    return True
+
+
+def _release_player_for_lcu_unavailable(
+    con: sqlite3.Connection,
+    puuid: str,
+    *,
+    delay_ms: int = _LCU_UNAVAILABLE_RETRY_DELAY_MS,
+) -> None:
+    now = _utc_now()
+    con.execute(
+        """
+        UPDATE crawl_queue
+        SET status = 'pending',
+            claimed_by = NULL,
+            claimed_at_ms = 0,
+            eligible_at_ms = ?,
+            updated_at = ?
+        WHERE puuid = ?
+        """,
+        (_now_ms() + max(0, delay_ms), now, puuid),
+    )
+    con.commit()
 
 
 def _seed_ladder_neighbors(
@@ -1781,11 +1856,6 @@ def _seed_manual_riot_ids(
     total_chunks = (len(normalized_ids) + _LCU_RIOT_ID_LOOKUP_BATCH - 1) // _LCU_RIOT_ID_LOOKUP_BATCH
     resolved_total = 0
     target_ready_total = 0
-    hot_total = 0
-    warm_total = 0
-    cold_total = 0
-    hot_candidates: list[tuple[int, int, int, str]] = []
-    warm_candidates: list[tuple[int, int, int, str]] = []
     for chunk_idx, chunk in enumerate(
         _iter_chunks([("", riot_id) for riot_id in normalized_ids], _LCU_RIOT_ID_LOOKUP_BATCH),
         start=1,
@@ -1801,65 +1871,40 @@ def _seed_manual_riot_ids(
             lcu_puuid = str(match.get("puuid") or "").strip() if match else ""
             if not lcu_puuid:
                 continue
-            history = get_match_history(lcu, lcu_puuid, begin=0, end=history_window)
-            target_game_ids = _extract_target_game_ids(history, target_queues)
-            target_game_count = len(target_game_ids)
-            if target_game_count == 0:
+            # Enqueue immediately without fetching match history — history calls
+            # for cold summoners take 5-10s each and block the seed loop.
+            # Consume workers will fetch history and filter by queue/target_games.
+            result = _enqueue_player(
+                con,
+                lcu_puuid,
+                depth=0,
+                source="manual_riot_id",
+                discovered_match_created_ms=0,
+                initial_delay_ms=_MANUAL_SEED_HYDRATION_DELAY_MS,
+            )
+            if result not in {"new", "requeued"}:
                 continue
             target_ready_total += 1
-
-            latest_any_match_ms = _latest_any_match_created_ms(history)
-            latest_match_ms = _latest_target_match_created_ms(history, target_queues)
-            recent_any_24h = _count_recent_matches(history, hot_cutoff_ms)
-            recent_any_72h = _count_recent_matches(history, warm_cutoff_ms)
-
-            if recent_any_24h > 0:
-                hot_total += 1
-                hot_candidates.append(
-                    (recent_any_24h, target_game_count, max(latest_match_ms, latest_any_match_ms), lcu_puuid)
-                )
-            elif recent_any_72h > 0:
-                warm_total += 1
-                warm_candidates.append(
-                    (recent_any_72h, target_game_count, max(latest_match_ms, latest_any_match_ms), lcu_puuid)
-                )
-            else:
-                cold_total += 1
+            added += 1
+            if remaining_budget is not None:
+                remaining_budget -= 1
+                if remaining_budget <= 0:
+                    print(
+                        f"[snowball] manual_riot_id pending cap reached  "
+                        f"added={added}  pending_cap={pending_cap}",
+                        flush=True,
+                    )
+                    break
         if chunk_idx == 1 or chunk_idx == total_chunks or chunk_idx % 5 == 0:
             print(
                 f"[snowball] manual_riot_id seed progress  chunks={chunk_idx}/{total_chunks}  "
-                f"resolved={resolved_total}  target_ready={target_ready_total}  "
-                f"hot={hot_total}  warm={warm_total}  cold={cold_total}",
+                f"resolved={resolved_total}  enqueued={added}",
                 flush=True,
             )
 
-    ranked_candidates = sorted(hot_candidates, reverse=True) + sorted(warm_candidates, reverse=True)
-    for _, _, latest_match_ms, lcu_puuid in ranked_candidates:
-        result = _enqueue_player(
-            con,
-            lcu_puuid,
-            depth=0,
-            source="manual_riot_id",
-            discovered_match_created_ms=latest_match_ms,
-            initial_delay_ms=0,
-        )
-        if result != "new":
-            continue
-        added += 1
-        if remaining_budget is not None:
-            remaining_budget -= 1
-            if remaining_budget <= 0:
-                print(
-                    f"[snowball] manual_riot_id pending cap reached  "
-                    f"added={added}  pending_cap={pending_cap}",
-                    flush=True,
-                )
-                break
-
     print(
         f"[snowball] manual_riot_id activity  "
-        f"resolved={resolved_total}  target_ready={target_ready_total}  "
-        f"hot={hot_total}  warm={warm_total}  cold={cold_total}  enqueued={added}",
+        f"resolved={resolved_total}  enqueued={added}",
         flush=True,
     )
     return added
@@ -2462,6 +2507,30 @@ def run_snowball(
             empty_queue_wait_started_at = None
 
             history = get_match_history(lcu, puuid, begin=0, end=history_window)
+            observed_match_created_ms = _latest_any_match_created_ms(history)
+            if observed_match_created_ms == 0 and get_current_summoner(lcu) is None:
+                _release_player_for_lcu_unavailable(con, puuid)
+                print(
+                    f"[snowball] LCU unavailable; released player  "
+                    f"source={source}  puuid={puuid[:12]}  "
+                    f"delay_ms={_LCU_UNAVAILABLE_RETRY_DELAY_MS}  worker={worker_id}",
+                    flush=True,
+                )
+                time.sleep(5.0)
+                continue
+            if (
+                observed_match_created_ms == 0
+                and source in {"manual_riot_id", "riot_tier"}
+                and _defer_player_for_history_hydration(con, puuid)
+            ):
+                stats.requeued_players += 1
+                print(
+                    f"[snowball] history not hydrated; deferred player  "
+                    f"source={source}  puuid={puuid[:12]}  "
+                    f"delay_ms={_MANUAL_SEED_HYDRATION_DELAY_MS}  worker={worker_id}",
+                    flush=True,
+                )
+                continue
             game_ids = _extract_target_game_ids(history, target_queues)
             if games_per_player is not None and games_per_player > 0:
                 game_ids = game_ids[:games_per_player]
@@ -2556,6 +2625,7 @@ def run_snowball(
                 puuid,
                 new_games_found=new_games_for_player,
                 claimed_match_created_ms=claimed_match_created_ms,
+                observed_match_created_ms=observed_match_created_ms,
                 requeue_cooldown_ms=player_requeue_cooldown_ms,
             )
             if requeued_on_finish:

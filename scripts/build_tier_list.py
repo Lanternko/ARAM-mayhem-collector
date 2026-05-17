@@ -149,6 +149,38 @@ MAYHEM_AUGMENT_SET_LABELS = {
 }
 
 
+def render_analytics_tags(
+    *,
+    cloudflare_token: str = "",
+    ga_measurement_id: str = "",
+) -> list[str]:
+    tags: list[str] = []
+    cloudflare_token = cloudflare_token.strip()
+    ga_measurement_id = ga_measurement_id.strip()
+
+    if cloudflare_token:
+        cf_config = html.escape(json.dumps({"token": cloudflare_token}), quote=True)
+        tags.append(
+            "<script defer src='https://static.cloudflareinsights.com/beacon.min.js' "
+            f"data-cf-beacon='{cf_config}'></script>"
+        )
+
+    if ga_measurement_id:
+        ga_id = html.escape(ga_measurement_id, quote=True)
+        ga_id_js = json.dumps(ga_measurement_id)
+        tags.append(
+            f"<script async src='https://www.googletagmanager.com/gtag/js?id={ga_id}'></script>"
+            "<script>"
+            "window.dataLayer=window.dataLayer||[];"
+            "function gtag(){dataLayer.push(arguments);}"
+            "gtag('js',new Date());"
+            f"gtag('config',{ga_id_js});"
+            "</script>"
+        )
+
+    return tags
+
+
 def _slugify_set_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
@@ -1239,6 +1271,8 @@ def render_html(
     site_url: str = "",
     og_image: str = "",
     build_date: str = "",
+    cloudflare_analytics_token: str = "",
+    ga_measurement_id: str = "",
 ) -> str:
     # Group champions by tier
     by_tier: dict[str, list[dict]] = {t: [] for t in TIER_ORDER}
@@ -1351,7 +1385,7 @@ def render_html(
         background: #0e1116;
         color: #e6e8eb;
         /* Body = Noto Sans TC (modern sans, readable in dense UI).  Serif
-           is reserved for small captions — see `.subtitle`, `.cmeta`,
+           is reserved for small captions — see `.subtitle`,
            `.aug .alift`. */
         font-family: "Noto Sans TC", -apple-system, "Segoe UI",
                      "Microsoft JhengHei", "PingFang TC", sans-serif;
@@ -1362,7 +1396,6 @@ def render_html(
        lines the user picked out: page subtitle, detail-panel sub-heading,
        and augment card's lift/games row. */
     .subtitle,
-    .detail-head .cmeta,
     .aug .alift {
         font-family: "Noto Serif TC", "Source Han Serif TC",
                      "PingFang TC", "PMingLiU", "Songti TC", serif;
@@ -1973,12 +2006,20 @@ def render_html(
     }
     .detail-head {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 10px;
         margin-bottom: 12px;
     }
+    .detail-avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        object-fit: cover;
+        border: 1px solid rgba(255,255,255,0.12);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.24);
+        flex: 0 0 auto;
+    }
     .detail-head .cname { font-size: 16px; font-weight: 600; }
-    .detail-head .cmeta { font-size: 12px; color: #9aa0a6; }
     .detail-section + .detail-section {
         margin-top: 18px;
         padding-top: 14px;
@@ -2355,10 +2396,7 @@ def render_html(
             align-items: flex-start;
             gap: 4px;
         }
-        .detail-head .cmeta {
-            font-size: 11px;
-            line-height: 1.4;
-        }
+        .detail-avatar { display: none; }
         .detail-section-head {
             flex-direction: column;
             align-items: flex-start;
@@ -2487,6 +2525,12 @@ def render_html(
     parts: list[str] = []
     parts.append("<!doctype html><html lang='zh-Hant'><head>")
     parts.extend(meta_lines)
+    parts.extend(
+        render_analytics_tags(
+            cloudflare_token=cloudflare_analytics_token,
+            ga_measurement_id=ga_measurement_id,
+        )
+    )
     # Webfonts: Noto Sans TC for everything by default; Noto Serif TC only
     # for a couple of small captions (subtitle, panel meta, augment lift)
     # where the mincho gives a "footnote" feel without hurting legibility.
@@ -2736,6 +2780,11 @@ def render_html(
     const TOTAL_GAMES = __TOTAL_GAMES__;
     const LANG_KEY = 'aram-mayhem-site-lang';
     const SET_RESIDUAL_THRESHOLD = 0.02;
+    function trackEvent(name, params = {}) {
+        if (typeof gtag === 'function') {
+            gtag('event', name, params);
+        }
+    }
     const COPY = {
         zh: {
             htmlLang: 'zh-Hant',
@@ -2767,8 +2816,6 @@ def render_html(
             panelEmpty: '先開啟「選擇你的隊友」，再從英雄列表點 1~4 隻英雄。系統會排出最適合補進來的英雄。',
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
             detailEmpty: '這個英雄目前沒有可顯示的資料。',
-            detailMeta: '左邊看 augment，下面看同隊兩兩搭檔',
-            augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
             setSectionTitle: 'Augment 系列相性',
@@ -2822,8 +2869,6 @@ def render_html(
             panelEmpty: 'Turn on teammate mode, then click 1-4 champions in the grid. The site will rank the best additions.',
             panelNoData: 'This combination does not have enough pair data yet.',
             detailEmpty: 'No detail data is available for this champion yet.',
-            detailMeta: 'Augments on the left, same-team pairings below',
-            augSectionMeta: 'Best / worst 5 from each rarity',
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
             setSectionTitle: 'Augment Sets',
@@ -3009,13 +3054,12 @@ def render_html(
         };
         return `
             <div class="detail-head">
-                <span class="cname">${champName(info)}</span>
-                <span class="cmeta">${copy.detailMeta}</span>
+                ${info.image ? `<img class="detail-avatar" loading="lazy" src="${info.image}" alt="">` : ''}
+                <span class="cname">${escHtml(champName(info))}</span>
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
                     <h3>${copy.detailSectionTitle}</h3>
-                    <span class="section-meta">${copy.augSectionMeta}</span>
                 </div>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
@@ -3337,6 +3381,13 @@ def render_html(
         host.innerHTML = `<div class="detail">${renderDetail(cid)}</div>`;
         champ.classList.add('detail-selected');
         detailSelected = cid;
+        if (!force) {
+            trackEvent('champion_detail_open', {
+                champion_id: cid,
+                champion_name: champ.getAttribute('data-name-en') || '',
+                tier: champ.getAttribute('data-tier') || '',
+            });
+        }
     }
 
     function openDetailByCid(cid) {
@@ -3361,51 +3412,68 @@ def render_html(
     }
 
     document.addEventListener('click', (ev) => {
+        const ghStar = ev.target.closest('.gh-star');
+        if (ghStar) {
+            trackEvent('github_star_click', { location: 'header' });
+            return;
+        }
         const langBtn = ev.target.closest('#lang-toggle');
         if (langBtn) {
-            applyLanguage(currentLang === 'en' ? 'zh' : 'en');
+            const nextLang = currentLang === 'en' ? 'zh' : 'en';
+            applyLanguage(nextLang);
+            trackEvent('language_toggle', { language: nextLang });
             return;
         }
         const fabBtn = ev.target.closest('#rec-fab');
         if (fabBtn) {
             recModalOpen = true;
             renderSidePanel();
+            trackEvent('recommendations_open', { source: 'fab', picks: teamPicks.length });
             return;
         }
         const sideClose = ev.target.closest('#side-close');
         if (sideClose) {
             recModalOpen = false;
             renderSidePanel();
+            trackEvent('recommendations_close', { source: 'panel', picks: teamPicks.length });
             return;
         }
         const modeBtn = ev.target.closest('#recommend-mode');
         if (modeBtn) {
-            setRecommendMode(!recommendMode);
+            const nextMode = !recommendMode;
+            setRecommendMode(nextMode);
             pickNotice = '';
             renderSidePanel();
+            trackEvent('recommend_mode_toggle', { enabled: nextMode });
             return;
         }
         const clearBtn = ev.target.closest('#clear-picks');
         if (clearBtn) {
+            const previousCount = teamPicks.length;
             teamPicks = [];
             pickNotice = '';
             syncPickDecorations();
             renderSidePanel();
+            trackEvent('team_picks_clear', { previous_count: previousCount });
             return;
         }
         const removeBtn = ev.target.closest('[data-remove-cid]');
         if (removeBtn) {
+            const removedCid = removeBtn.getAttribute('data-remove-cid');
             teamPicks = teamPicks.filter(cid => cid !== removeBtn.getAttribute('data-remove-cid'));
             pickNotice = '';
             syncPickDecorations();
             renderSidePanel();
+            trackEvent('team_pick_remove', { champion_id: removedCid, picks: teamPicks.length });
             return;
         }
         const recRow = ev.target.closest('.rec-row');
         if (recRow) {
             recModalOpen = false;
             renderSidePanel();
-            openDetailByCid(recRow.getAttribute('data-cid'));
+            const recCid = recRow.getAttribute('data-cid');
+            trackEvent('recommendation_click', { champion_id: recCid, picks: teamPicks.length });
+            openDetailByCid(recCid);
             return;
         }
         const champ = ev.target.closest('.champ');
@@ -3413,6 +3481,7 @@ def render_html(
         const cid = champ.getAttribute('data-cid');
         if (recommendMode) {
             toggleTeamPick(cid);
+            trackEvent('team_pick_toggle', { champion_id: cid, picks: teamPicks.length });
             return;
         }
         openDetailForChamp(champ);
@@ -3504,6 +3573,7 @@ def render_html(
         filterState.role = chip.getAttribute('data-role') || '';
         setActiveChip(filterState.role);
         applyFilters();
+        trackEvent('role_filter_click', { role: filterState.role || 'all' });
     });
 
     // Keyboard activation for cards.  Enter / Space on a `.champ` or `.aug`
@@ -3611,6 +3681,10 @@ def render_html(
               help="Override the og:image URL (default: generated og-image.png under --site-url)")
 @click.option("--build-date", default="",
               help="Date stamp shown in footer (default: today, YYYY-MM-DD)")
+@click.option("--cloudflare-analytics-token", envvar="CLOUDFLARE_ANALYTICS_TOKEN", default="",
+              help="Cloudflare Web Analytics token; can also be set via CLOUDFLARE_ANALYTICS_TOKEN")
+@click.option("--ga-measurement-id", envvar="GA_MEASUREMENT_ID", default="",
+              help="GA4 measurement id, e.g. G-XXXXXXXXXX; can also be set via GA_MEASUREMENT_ID")
 def main(
     db: Path,
     queue_id: int,
@@ -3625,6 +3699,8 @@ def main(
     site_url: str,
     og_image: str,
     build_date: str,
+    cloudflare_analytics_token: str,
+    ga_measurement_id: str,
 ) -> None:
     patch_prefix = patch_prefix or None
     click.echo(f"[tierlist] db={db}  queue={queue_id}  patch_prefix={patch_prefix}")
@@ -3681,6 +3757,11 @@ def main(
     if not build_date:
         build_date = _dt.date.today().isoformat()
 
+    if cloudflare_analytics_token:
+        click.echo("[tierlist] Cloudflare Web Analytics enabled")
+    if ga_measurement_id:
+        click.echo(f"[tierlist] GA4 enabled: {ga_measurement_id}")
+
     if not og_image:
         og_asset_path = out_path.parent / "og-image.png"
         try:
@@ -3715,6 +3796,8 @@ def main(
         site_url=site_url,
         og_image=og_image,
         build_date=build_date,
+        cloudflare_analytics_token=cloudflare_analytics_token,
+        ga_measurement_id=ga_measurement_id,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
