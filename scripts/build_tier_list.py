@@ -1593,6 +1593,7 @@ def render_html(
         font-weight: 600;
     }
     .side-close,
+    .detail-close,
     .rec-fab {
         border: 1px solid #30363d;
         background: #1b2030;
@@ -1601,7 +1602,8 @@ def render_html(
         font-weight: 700;
         cursor: pointer;
     }
-    .side-close {
+    .side-close,
+    .detail-close {
         display: none;
         width: 34px;
         height: 34px;
@@ -2002,7 +2004,16 @@ def render_html(
         background: #1b2030;
         border-radius: 10px;
         padding: 14px 16px 16px;
+        position: relative;
         animation: slideDown .18s ease-out;
+    }
+    .detail-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1;
+        font-size: 18px;
+        line-height: 1;
     }
     @keyframes slideDown {
         from { opacity: 0; transform: translateY(-4px); }
@@ -2335,7 +2346,8 @@ def render_html(
        cramped on most phones. */
     @media (max-width: 700px) {
         body { padding: 18px 10px 40px; }
-        body.rec-modal-open { overflow: hidden; }
+        body.rec-modal-open,
+        body.detail-modal-open { overflow: hidden; }
         h1 { font-size: 18px; }
         .subtitle { font-size: 12px; }
         /* Keep title/subtitle on the left and utility actions pinned to the
@@ -2378,7 +2390,8 @@ def render_html(
             border-radius: 14px;
             box-shadow: 0 22px 60px rgba(0,0,0,0.58);
         }
-        body.rec-modal-open::before {
+        body.rec-modal-open::before,
+        body.detail-modal-open::before {
             content: "";
             position: fixed;
             inset: 0;
@@ -2386,6 +2399,24 @@ def render_html(
             background: rgba(5, 8, 13, 0.72);
         }
         .side-close { display: inline-flex; }
+        .detail-host {
+            position: fixed;
+            z-index: 70;
+            inset: 0;
+            overflow: auto;
+            padding: 56px 12px 18px;
+            -webkit-overflow-scrolling: touch;
+        }
+        .detail-host .detail {
+            max-width: 680px;
+            min-height: 100%;
+            margin: 0 auto;
+            padding: 14px;
+            border: 1px solid #30363d;
+            border-radius: 14px;
+            box-shadow: 0 22px 60px rgba(0,0,0,0.58);
+        }
+        .detail-close { display: inline-flex; }
         .rec-fab { display: none; }
         .rec-fab:not(.is-hidden) { display: inline-flex; }
         .side-sub { font-size: 11px; }
@@ -2399,11 +2430,17 @@ def render_html(
            packs 7-8 in and makes icons tiny). */
         .tier-grid { grid-template-columns: repeat(6, 1fr); gap: 5px; }
         .detail-head {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 4px;
+            flex-direction: row;
+            align-items: center;
+            gap: 10px;
+            padding-right: 42px;
         }
-        .detail-avatar { display: none; }
+        .detail-avatar {
+            display: block;
+            width: 42px;
+            height: 42px;
+            border-radius: 9px;
+        }
         .detail-section-head {
             flex-direction: column;
             align-items: flex-start;
@@ -2418,7 +2455,7 @@ def render_html(
             line-height: 1.4;
         }
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
-        .detail-cols.pair-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .detail-cols.pair-cols { grid-template-columns: 1fr; gap: 14px; }
         .detail-cols.pair-cols .detail-col h3 { margin-bottom: 6px; font-size: 12px; }
         .detail-cols.pair-cols .detail-col-heading h3 { margin-bottom: 0; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
@@ -2428,23 +2465,26 @@ def render_html(
         .rlabel { display: none; }
         /* Each rarity row shows exactly the same 5 augments (top / bot),
            so force 5 columns and let each card shrink to fit. */
-        .aug-list { grid-template-columns: repeat(5, 1fr); gap: 4px; }
+        .aug-list { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
         .mate-list { grid-template-columns: 1fr; gap: 6px; }
-        .detail-cols.pair-cols .mate-card {
-            grid-template-columns: 36px 1fr;
-            gap: 6px;
-            padding: 6px;
+        .mate-card {
+            grid-template-columns: 34px 1fr;
+            gap: 5px;
+            padding: 5px;
+            min-width: 0;
         }
-        .detail-cols.pair-cols .mate-card img {
-            width: 36px;
-            height: 36px;
+        .mate-card > div { min-width: 0; }
+        .mate-card img {
+            width: 34px;
+            height: 34px;
             border-radius: 6px;
         }
-        .detail-cols.pair-cols .mate-card .mname { font-size: 11px; }
-        .detail-cols.pair-cols .mate-card .mwr { font-size: 10px; }
-        .detail-cols.pair-cols .mate-card .mmeta { font-size: 9px; }
-        .detail-cols.pair-cols .mate-card .mmeta .mmeta-label,
-        .detail-cols.pair-cols .mate-card .mmeta .mmeta-games { display: none; }
+        .mate-card .mname { font-size: 11px; }
+        .mate-card .mwr { font-size: 10px; }
+        .mate-card .mmeta { font-size: 9px; }
+        .mate-card .mmeta .mmeta-label,
+        .mate-card .mmeta .mmeta-z,
+        .mate-card .mmeta .mmeta-games { display: none; }
         .aug { padding: 5px 3px; }
         .aug img { width: 36px; height: 36px; }
         .aug .aname { font-size: 9px; min-height: 22px; }
@@ -2452,7 +2492,7 @@ def render_html(
         /* Hide the lift% / games count on mobile - keep cards compact.
            Numbers still available on hover (tooltip) and via the title attr. */
         .aug .alift { display: none; }
-        .aug-tip { width: 170px; font-size: 10px; }
+        .aug-tip { display: none; }
         /* Touch-target floor (WCAG 2.5.5).  Chips were 4×10 padding on 11px
            font ≈ 32 px tall.  Bump to a real 44 px tap area without growing
            the visual pill, by adding transparent vertical padding. */
@@ -2460,6 +2500,12 @@ def render_html(
         .icon-btn,
         .gh-star { padding: 8px 14px; min-height: 36px; }
         .lang-toggle { min-width: 0; }
+    }
+    @media (min-width: 320px) and (max-width: 359px) {
+        .mate-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 360px) and (max-width: 700px) {
+        .mate-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     /* Keyboard a11y: every interactive element gets a visible focus ring
        when focused via keyboard (not mouse click).  Uses the tier accent
@@ -2470,6 +2516,7 @@ def render_html(
     .gh-star:focus-visible,
     .tool-btn:focus-visible,
     .side-close:focus-visible,
+    .detail-close:focus-visible,
     .rec-fab:focus-visible,
     .pick-chip:focus-visible,
     .rec-row:focus-visible,
@@ -2823,6 +2870,7 @@ def render_html(
             panelEmpty: '先開啟「選擇你的隊友」，再從英雄列表點 1~4 隻英雄。系統會排出最適合補進來的英雄。',
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
             detailEmpty: '這個英雄目前沒有可顯示的資料。',
+            detailClose: '關閉詳細資訊',
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
             setSectionTitle: 'Augment 系列相性',
@@ -2876,6 +2924,7 @@ def render_html(
             panelEmpty: 'Turn on teammate mode, then click 1-4 champions in the grid. The site will rank the best additions.',
             panelNoData: 'This combination does not have enough pair data yet.',
             detailEmpty: 'No detail data is available for this champion yet.',
+            detailClose: 'Close details',
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
             setSectionTitle: 'Augment Sets',
@@ -3063,9 +3112,10 @@ def render_html(
             `;
         };
         return `
+            <button class="detail-close" type="button" title="${escHtml(copy.detailClose)}" aria-label="${escHtml(copy.detailClose)}">&times;</button>
             <div class="detail-head">
                 ${info.image ? `<img class="detail-avatar" loading="lazy" src="${info.image}" alt="">` : ''}
-                <span class="cname">${escHtml(champName(info))}</span>
+                <span class="cname" id="detail-title-${cid}">${escHtml(champName(info))}</span>
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
@@ -3360,6 +3410,17 @@ def render_html(
         btn.textContent = recommendMode ? tr().recModeOn : tr().recModeOff;
     }
 
+    function syncDetailModalState() {
+        document.body.classList.toggle('detail-modal-open', Boolean(detailSelected) && isMobileViewport());
+    }
+
+    function closeDetail() {
+        document.querySelectorAll('.detail-host').forEach(h => h.innerHTML = '');
+        document.querySelectorAll('.champ.detail-selected').forEach(el => el.classList.remove('detail-selected'));
+        detailSelected = null;
+        syncDetailModalState();
+    }
+
     function openDetailForChamp(champ, force = false) {
         const cid = champ.getAttribute('data-cid');
         const block = champ.closest('.tier-block');
@@ -3374,9 +3435,7 @@ def render_html(
         });
 
         if (!force && detailSelected === cid && host.firstChild) {
-            host.innerHTML = '';
-            champ.classList.remove('detail-selected');
-            detailSelected = null;
+            closeDetail();
             return;
         }
 
@@ -3388,9 +3447,16 @@ def render_html(
             anchor.after(host);
         }
 
-        host.innerHTML = `<div class="detail">${renderDetail(cid)}</div>`;
+        const dialogAttrs = isMobileViewport()
+            ? ` role="dialog" aria-modal="true" aria-labelledby="detail-title-${cid}"`
+            : '';
+        host.innerHTML = `<div class="detail"${dialogAttrs}>${renderDetail(cid)}</div>`;
         champ.classList.add('detail-selected');
         detailSelected = cid;
+        syncDetailModalState();
+        if (isMobileViewport()) {
+            host.querySelector('.detail-close')?.focus({ preventScroll: true });
+        }
         if (!force) {
             trackEvent('champion_detail_open', {
                 champion_id: cid,
@@ -3446,6 +3512,15 @@ def render_html(
             recModalOpen = false;
             renderSidePanel();
             trackEvent('recommendations_close', { source: 'panel', picks: teamPicks.length });
+            return;
+        }
+        const detailClose = ev.target.closest('.detail-close');
+        if (detailClose) {
+            closeDetail();
+            return;
+        }
+        if (isMobileViewport() && ev.target.classList && ev.target.classList.contains('detail-host')) {
+            closeDetail();
             return;
         }
         const modeBtn = ev.target.closest('#recommend-mode');
@@ -3512,6 +3587,7 @@ def render_html(
             const host = champ.closest('.tier-block').querySelector('.detail-host');
             const anchor = lastChampInRow(champ);
             if (anchor.nextSibling !== host) anchor.after(host);
+            syncDetailModalState();
         }, 120);
     });
 
@@ -3562,9 +3638,7 @@ def render_html(
         if (detailSelected) {
             const sel = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
             if (!sel || sel.classList.contains('hidden')) {
-                document.querySelectorAll('.detail-host').forEach(h => h.innerHTML = '');
-                document.querySelectorAll('.champ.detail-selected').forEach(el => el.classList.remove('detail-selected'));
-                detailSelected = null;
+                closeDetail();
             }
         }
     }
@@ -3591,10 +3665,16 @@ def render_html(
     // tabindex="0").  Preventing default on Space stops the page from
     // scrolling.
     document.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Escape' && recModalOpen) {
-            recModalOpen = false;
-            renderSidePanel();
-            return;
+        if (ev.key === 'Escape') {
+            if (detailSelected && isMobileViewport()) {
+                closeDetail();
+                return;
+            }
+            if (recModalOpen) {
+                recModalOpen = false;
+                renderSidePanel();
+                return;
+            }
         }
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         const t = ev.target;
