@@ -1565,6 +1565,10 @@ def render_html(
     .side-panel {
         position: sticky;
         top: 24px;
+        max-height: calc(100vh - 48px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
         background: #11151d;
         border: 1px solid #1f2530;
         border-radius: 12px;
@@ -2319,6 +2323,8 @@ def render_html(
         .app-shell.with-side-panel { grid-template-columns: 1fr; }
         .side-panel {
             position: static;
+            max-height: none;
+            overflow: visible;
             order: -1;
         }
     }
@@ -2366,6 +2372,7 @@ def render_html(
             right: 12px;
             top: 56px;
             bottom: 18px;
+            max-height: none;
             overflow: auto;
             padding: 14px;
             border-radius: 14px;
