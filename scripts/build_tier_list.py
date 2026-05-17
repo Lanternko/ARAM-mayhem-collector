@@ -2991,6 +2991,8 @@ def render_html(
         { key: 'kGold',      css: 'gold' },
         { key: 'kSilver',    css: 'silver' },
     ];
+    const MATE_LIST_LIMIT_DESKTOP = 8;
+    const MATE_LIST_LIMIT_MOBILE = 6;
 
     function buildRarityRow(items, kind, r) {
         const copy = tr();
@@ -3020,8 +3022,9 @@ def render_html(
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
         const botRows = RARITIES.map(r => buildRarityRow(bot[r.key], 'bad', r)).join('');
         const pairs = info.pairs || [];
-        const mateTop = pairs.slice(0, 5);
-        const mateBot = [...pairs].slice(-5).reverse();
+        const mateLimit = isMobileViewport() ? MATE_LIST_LIMIT_MOBILE : MATE_LIST_LIMIT_DESKTOP;
+        const mateTop = pairs.slice(0, mateLimit);
+        const mateBot = [...pairs].slice(-mateLimit).reverse();
         const buildMateCard = (entry, kind) => {
             const mate = DATA.champs[String(entry.id)];
             const name = mate ? champName(mate) : ('#' + entry.id);

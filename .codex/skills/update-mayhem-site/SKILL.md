@@ -1,6 +1,6 @@
 ---
 name: update-mayhem-site
-description: Refresh and deploy the ARAM Mayhem tier-list website for this repo. Use when the user asks to update new Mayhem data to the website, rebuild docs/index.html, publish the GitHub Pages tier list, or asks for the website update SOP.
+description: Refresh, deploy, upload, publish, or 上線 the ARAM Mayhem GitHub Pages tier-list website for this repo. Use when the user gives a command such as deploy, upload, 部署, 上傳, 上線, update site, refresh site, rebuild docs/index.html, publish GitHub Pages, or asks for the website update SOP. Do not use for non-action mentions such as asking whether deployment should be considered.
 ---
 
 # Update Mayhem Site
@@ -8,6 +8,8 @@ description: Refresh and deploy the ARAM Mayhem tier-list website for this repo.
 Use this skill for the `aram-winrate-nn` GitHub Pages tier-list site.
 
 ## Workflow
+
+Only proceed when the user's latest message is an action request to deploy/upload/publish the site, or a request for the site deploy SOP. If the user is only discussing whether to deploy, asking "should we deploy?", or mentioning deployment as a possibility, answer the question without running this workflow.
 
 1. Inspect `git status --short --branch` first.
 2. Rebuild the site from the repo root:
