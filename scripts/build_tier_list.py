@@ -1449,6 +1449,7 @@ def render_html(
     .gh-star:hover { background: #30363d; border-color: #58606b; }
     .icon-btn svg,
     .gh-star svg { flex-shrink: 0; }
+    .gh-star-mobile-label { display: none; }
     .lang-toggle { min-width: 56px; justify-content: center; }
     .lang-toggle span { font-size: 12px; letter-spacing: 0; }
     /* Filter bar: role chips + free-text search + live count. */
@@ -2499,6 +2500,9 @@ def render_html(
         .chip { padding: 8px 12px; font-size: 11px; min-height: 36px; }
         .icon-btn,
         .gh-star { padding: 8px 14px; min-height: 36px; }
+        .gh-star svg,
+        .gh-star-full-label { display: none; }
+        .gh-star-mobile-label { display: inline; }
         .lang-toggle { min-width: 0; }
     }
     @media (min-width: 320px) and (max-width: 359px) {
@@ -2646,7 +2650,8 @@ def render_html(
     parts.append(
         f"<a class='gh-star' href='{REPO_URL}' target='_blank' rel='noopener' "
         f"title='覺得有用請幫忙按 Star ⭐'>"
-        f"{gh_icon} Star on GitHub"
+        f"{gh_icon}<span class='gh-star-full-label'>Star on GitHub</span>"
+        "<span class='gh-star-mobile-label'>⭐ GitHub</span>"
         f"</a>"
     )
     parts.append("</div>")
