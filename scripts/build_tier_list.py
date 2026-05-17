@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import datetime as _dt
+import html
 from io import BytesIO
 import json
 import math
@@ -56,6 +57,108 @@ TIER_LABEL_BG = {
 
 CDRAGON_BASE = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default"
 
+MAYHEM_AUGMENT_SETS = {
+    "Archmage": [
+        "Buff Buddies",
+        "Juiced",
+        "Mind to Matter",
+        "Ocean Soul",
+        "Overflow",
+    ],
+    "Dive Bomb": [
+        "Clown College",
+        "Dive Bomber",
+        "Final City Transit",
+        "Self Destruct",
+    ],
+    "Firecracker": [
+        "Critical Missile",
+        "Fan the Hammer",
+        "Light 'em Up!",
+        "Magic Missile",
+        "Twin Fire",
+        "Typhoon",
+    ],
+    "Fully Automated": [
+        "Divine Intervention",
+        "Firefox",
+        "Frost Wraith",
+        "OK Boomerang",
+        "Prom Queen",
+        "Quantum Computing",
+        "Self Destruct",
+        "Sonata",
+    ],
+    "High Roller": [
+        "Pandora's Box",
+        "Stats!",
+        "Stats on Stats!",
+        "Stats on Stats on Stats!",
+        "Transmute: Chaos",
+        "Transmute: Gold",
+        "Transmute: Prismatic",
+    ],
+    "Make it Rain": [
+        "Donation",
+        "From Beginning to End",
+        "Goldrend",
+        "Heads Up Cupcake!",
+        "Red Envelopes",
+        "Upgrade: Collector",
+        "Upgrade: Immolate",
+    ],
+    "Snowday": [
+        "Biggest Snowball Ever",
+        "Holy Snowball",
+        "Pinball",
+        "Snowball Roulette",
+        "Snowball Upgrade",
+    ],
+    "Stackosaurus Rex": [
+        "Infinite Recursion",
+        "Master of Duality",
+        "Phenomenal Evil",
+        "Quest: Steel Your Heart",
+        "Shrink Engine",
+        "Slap Around",
+        "Soul Eater",
+        "Tap Dancer",
+        "Upgrade: Hubris",
+    ],
+    "Wee Woo Wee Woo": [
+        "All For You",
+        "Critical Healing",
+        "First-Aid Kit",
+        "I'm a Baby Kitty Where is Mama",
+        "Sonata",
+        "Upgrade Mikael's Blessing",
+        "Windspeaker's Blessing",
+    ],
+}
+
+
+def _slugify_set_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def _normalize_augment_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def _augment_set_lookup() -> dict[str, list[dict[str, str]]]:
+    lookup: dict[str, list[dict[str, str]]] = {}
+    for set_name, aug_names in MAYHEM_AUGMENT_SETS.items():
+        slug = _slugify_set_name(set_name)
+        for aug_name in aug_names:
+            info = {"name": set_name, "slug": slug}
+            lookup.setdefault(_normalize_augment_name(aug_name), []).append(info)
+            if aug_name.startswith("Upgrade: "):
+                lookup.setdefault(
+                    _normalize_augment_name(aug_name.replace("Upgrade: ", "Upgrade ")),
+                    [],
+                ).append(info)
+    return lookup
+
 
 def _queue_copy(queue_id: int) -> tuple[str, str]:
     # queue 2400 was Mayhem's queueId during the 16.x cycle.
@@ -90,6 +193,72 @@ def _draw_text_fit(draw, xy: tuple[int, int], text: str, font, fill: str, max_wi
     draw.text(xy, text, font=font, fill=fill)
 
 
+def _draw_prismatic_frame(img, box: tuple[int, int, int, int], radius: int) -> None:
+    from PIL import Image, ImageDraw, ImageFilter
+
+    x1, y1, x2, y2 = box
+    border_w = 14
+    stops = [
+        (0.00, (216, 184, 255)),
+        (0.28, (188, 214, 255)),
+        (0.56, (255, 213, 236)),
+        (0.82, (231, 213, 255)),
+        (1.00, (216, 184, 255)),
+    ]
+
+    def sample(t: float) -> tuple[int, int, int, int]:
+        for idx in range(len(stops) - 1):
+            left_t, left = stops[idx]
+            right_t, right = stops[idx + 1]
+            if t <= right_t:
+                local = 0.0 if right_t == left_t else (t - left_t) / (right_t - left_t)
+                rgb = tuple(int(left[c] + (right[c] - left[c]) * local) for c in range(3))
+                return (*rgb, 255)
+        return (*stops[-1][1], 255)
+
+    ring_mask = Image.new("L", img.size, 0)
+    ring_draw = ImageDraw.Draw(ring_mask)
+    ring_draw.rounded_rectangle(box, radius=radius, fill=255)
+    ring_draw.rounded_rectangle(
+        (x1 + border_w, y1 + border_w, x2 - border_w, y2 - border_w),
+        radius=radius - border_w,
+        fill=0,
+    )
+
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.rounded_rectangle(
+        (x1 - 5, y1 - 5, x2 + 5, y2 + 5),
+        radius=radius + 5,
+        outline=(216, 184, 255, 140),
+        width=9,
+    )
+    glow_draw.rounded_rectangle(
+        (x1 - 10, y1 - 10, x2 + 10, y2 + 10),
+        radius=radius + 10,
+        outline=(188, 214, 255, 80),
+        width=7,
+    )
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(7)))
+
+    gradient = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    px = gradient.load()
+    denom = max(1, (x2 - x1) + (y2 - y1))
+    for y in range(y1, y2 + 1):
+        for x in range(x1, x2 + 1):
+            if ring_mask.getpixel((x, y)):
+                px[x, y] = sample(((x - x1) + (y - y1)) / denom)
+    img.alpha_composite(gradient)
+
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        (x1 + border_w + 2, y1 + border_w + 2, x2 - border_w - 2, y2 - border_w - 2),
+        radius=radius - border_w - 2,
+        outline="#090c12",
+        width=4,
+    )
+
+
 def write_og_image(
     out_path: Path,
     records: list[dict],
@@ -99,50 +268,21 @@ def write_og_image(
     patch_prefix: str | None,
     total_games: int,
 ) -> None:
-    """Write a 1200x630 social preview image for Open Graph cards."""
-    from PIL import Image, ImageDraw, ImageFilter
+    """Write a square top-champion thumbnail for Open Graph cards."""
+    from PIL import Image, ImageDraw
 
-    title, _queue_label = _queue_copy(queue_id)
-    patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
     top_record = records[0] if records else None
     top_meta = champ_meta.get(top_record["champion_id"]) if top_record else None
     top_wr = float(top_record.get("bayes_wr", 0.0)) if top_record else 0.0
 
-    img = Image.new("RGBA", (1200, 630), "#0f1117")
+    img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    title_font = _load_font(64, bold=True)
-    body_font = _load_font(36)
-    meta_font = _load_font(30, bold=True)
-    small_font = _load_font(24, bold=True)
+    badge_font = _load_font(58, bold=True)
 
-    # Layered blocks keep the preview readable in small chat cards.
-    draw.rectangle((0, 0, 1200, 630), fill="#0f1117")
-    draw.rectangle((0, 0, 1200, 118), fill="#141824")
-    draw.rectangle((0, 562, 1200, 630), fill="#151923")
-    draw.rounded_rectangle((64, 150, 1136, 494), radius=28, fill="#191d28", outline="#2b3240", width=2)
-    draw.line((64, 118, 1136, 118), fill="#57a6ff", width=4)
-
-    draw.text((72, 42), "ARAM Mayhem Database", font=meta_font, fill="#65b2ff")
-    draw.text((76, 196), title + "資料庫", font=title_font, fill="#f4f7ff")
-    draw.text((80, 306), patch_label, font=meta_font, fill="#8f98aa")
-    draw.text((80, 356), "英雄 x 海克斯勝率、搭檔與組隊推薦 by路燈", font=body_font, fill="#d6d8de")
-    draw.text((76, 580), "lanternko.github.io/ARAM-Mayhem-Database", font=small_font, fill="#8f98aa")
-
-    card_x, card_y, card_size = 840, 174, 260
-    frame_box = (card_x - 16, card_y - 16, card_x + card_size + 16, card_y + card_size + 16)
+    card_x, card_y, card_size = 58, 58, 396
+    frame_box = (card_x - 24, card_y - 24, card_x + card_size + 24, card_y + card_size + 24)
     draw.rounded_rectangle(frame_box, radius=36, fill="#080a10")
-    x1, y1, x2, y2 = frame_box
-    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_draw.rounded_rectangle((x1 - 12, y1 - 12, x2 + 12, y2 + 12), radius=48, outline=(220, 180, 255, 150), width=14)
-    glow_draw.rounded_rectangle((x1 - 18, y1 - 18, x2 + 18, y2 + 18), radius=54, outline=(170, 210, 255, 90), width=10)
-    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(9)))
-    for i, color in enumerate(["#ffffff", "#e7d5ff", "#bcd6ff", "#ffd5ec", "#fff1c8", "#ffffff"]):
-        inset = i * 3
-        draw.rounded_rectangle((x1 + inset, y1 + inset, x2 - inset, y2 - inset), radius=max(4, 36 - inset), outline=color, width=4)
-    draw.rounded_rectangle((x1 + 19, y1 + 19, x2 - 19, y2 - 19), radius=18, outline="#0a0d14", width=4)
-    draw.arc((x1 + 10, y1 + 10, x2 - 10, y2 - 10), 210, 335, fill="#ffffff", width=4)
-    draw.arc((x1 + 13, y1 + 13, x2 - 13, y2 - 13), 28, 82, fill="#fff1c8", width=3)
+    _draw_prismatic_frame(img, frame_box, 36)
     if top_meta and top_meta.get("image"):
         try:
             resp = httpx.get(top_meta["image"], timeout=5)
@@ -161,10 +301,8 @@ def write_og_image(
             fill="#242b3a",
         )
     badge_text = f"{top_wr * 100:.1f}%"
-    draw.rounded_rectangle((card_x, card_y + card_size - 62, card_x + 122, card_y + card_size), radius=18, fill="#0d111a")
-    draw.text((card_x + 14, card_y + card_size - 52), badge_text, font=meta_font, fill="#f8fbff")
-    if top_meta:
-        _draw_text_fit(draw, (card_x, card_y + card_size + 34), str(top_meta.get("name", "")), small_font, "#dce4f2", 220)
+    draw.rounded_rectangle((card_x, card_y + card_size - 102, card_x + 190, card_y + card_size), radius=22, fill="#0d111a")
+    draw.text((card_x + 22, card_y + card_size - 86), badge_text, font=badge_font, fill="#f8fbff")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.convert("RGB").save(out_path, "PNG", optimize=True)
@@ -352,23 +490,29 @@ def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
         r = httpx.get("https://ddragon.leagueoflegends.com/api/versions.json", timeout=15)
         r.raise_for_status()
         version = r.json()[0]
-    url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/zh_TW/champion.json"
-    r = httpx.get(url, timeout=30)
-    if r.status_code != 200:
-        url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"
-        r = httpx.get(url, timeout=30)
-    r.raise_for_status()
-    raw = r.json()["data"]
+    url_zh = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/zh_TW/champion.json"
+    r_zh = httpx.get(url_zh, timeout=30)
+    url_en = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"
+    r_en = httpx.get(url_en, timeout=30)
+    if r_zh.status_code != 200 and r_en.status_code != 200:
+        r_zh.raise_for_status()
+        r_en.raise_for_status()
+    raw_zh = r_zh.json()["data"] if r_zh.status_code == 200 else {}
+    raw_en = r_en.json()["data"] if r_en.status_code == 200 else {}
     by_id: dict[int, dict] = {}
     applied: list[tuple[str, list[str], list[str]]] = []
-    for _, entry in raw.items():
-        alias = entry["id"]
-        tags = entry.get("tags") or []
+    source = raw_en or raw_zh
+    for alias, base_entry in source.items():
+        entry_en = raw_en.get(alias, base_entry)
+        entry_zh = raw_zh.get(alias, base_entry)
+        tags = entry_en.get("tags") or entry_zh.get("tags") or []
         if alias in TAG_OVERRIDES:
             applied.append((alias, list(tags), list(TAG_OVERRIDES[alias])))
             tags = list(TAG_OVERRIDES[alias])
-        by_id[int(entry["key"])] = {
-            "name": entry["name"],
+        by_id[int(base_entry["key"])] = {
+            "name": entry_zh.get("name") or entry_en.get("name") or alias,
+            "name_zh": entry_zh.get("name") or entry_en.get("name") or alias,
+            "name_en": entry_en.get("name") or alias,
             "alias": alias,
             "tags": tags,
             "image": f"https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{alias}.png",
@@ -422,13 +566,18 @@ def _clean_desc(text: str) -> str:
     return s
 
 
-def load_augment_descriptions(cache_dir: Path) -> dict[int, str]:
+def load_augment_descriptions(
+    cache_dir: Path,
+    *,
+    locale: str,
+    cache_name: str,
+) -> dict[int, str]:
     """Resolve Mayhem augment descriptions via:
 
         kiwi.bin.json (AugmentPlatformId -> DescriptionTra)
-        +  lol.stringtable.json zh_tw (lowercase key -> zh_tw text)
+        +  lol.stringtable.json (lowercase key -> localized text)
 
-    Returns dict mapping augment ID (matches our DB) -> cleaned zh-TW summary.
+    Returns dict mapping augment ID (matches our DB) -> cleaned localized summary.
     """
     kiwi = _cached_get_json(
         "https://raw.communitydragon.org/latest/game/maps/modespecificdata/kiwi.bin.json",
@@ -446,8 +595,8 @@ def load_augment_descriptions(cache_dir: Path) -> dict[int, str]:
         plat[int(pid)] = (desc_key, tip_key)
 
     st = _cached_get_json(
-        "https://raw.communitydragon.org/latest/game/zh_tw/data/menu/en_us/lol.stringtable.json",
-        cache_dir / "lol_stringtable_zh_tw.json",
+        f"https://raw.communitydragon.org/latest/game/{locale}/data/menu/en_us/lol.stringtable.json",
+        cache_dir / cache_name,
     )
     entries = st["entries"] if isinstance(st, dict) and "entries" in st else {}
 
@@ -506,6 +655,7 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
     rows = r.json()
 
     by_id: dict[int, dict] = {}
+    set_by_augment = _augment_set_lookup()
     name_overrides_applied: list[tuple[int, str, str]] = []
     for entry in rows:
         aug_id = entry.get("id")
@@ -515,22 +665,34 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
         tw_entry = tw_by_id.get(aug_id, {})
         tw_name = tw_entry.get("nameTRA") or tw_entry.get("name")
         en_name = entry.get("nameTRA") or entry.get("name") or entry.get("simpleNameTRA")
-        name = tw_name if tw_name and tw_name.strip() else en_name
+        name_zh = tw_name if tw_name and tw_name.strip() else en_name
+        name_en = en_name or tw_name
+        name = name_zh
         # Apply manual TW translation override if we have one.
         if aug_id in AUGMENT_NAME_OVERRIDES:
             override = AUGMENT_NAME_OVERRIDES[aug_id]
             if name != override:
                 name_overrides_applied.append((aug_id, name or "?", override))
                 name = override
+                name_zh = override
         icon_path = (
             entry.get("augmentSmallIconPath")
             or entry.get("augmentLargeIconPath")
         )
+        en_lookup_name = entry.get("nameTRA") or entry.get("name") or entry.get("simpleNameTRA") or ""
+        set_infos = set_by_augment.get(_normalize_augment_name(en_lookup_name), [])
         by_id[aug_id] = {
             "name": name or f"#{aug_id}",
+            "name_zh": name_zh or name or f"#{aug_id}",
+            "name_en": name_en or name or f"#{aug_id}",
             "icon": _icon_url(icon_path) if icon_path else "",
             "rarity": entry.get("rarity", ""),
             "desc": "",
+            "desc_zh": "",
+            "desc_en": "",
+            "set": " / ".join(info["name"] for info in set_infos),
+            "setSlug": " ".join(info["slug"] for info in set_infos),
+            "sets": set_infos,
         }
     if name_overrides_applied:
         click.echo(
@@ -542,16 +704,33 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
 
     if cache_dir is not None:
         try:
-            descs = load_augment_descriptions(cache_dir)
-            for aid, txt in descs.items():
+            descs_zh = load_augment_descriptions(
+                cache_dir,
+                locale="zh_tw",
+                cache_name="lol_stringtable_zh_tw.json",
+            )
+            for aid, txt in descs_zh.items():
                 if aid in by_id:
                     by_id[aid]["desc"] = txt
+                    by_id[aid]["desc_zh"] = txt
         except Exception as exc:
-            click.echo(f"[tierlist] WARN: augment description fetch failed: {exc}")
+            click.echo(f"[tierlist] WARN: zh-TW augment description fetch failed: {exc}")
+        try:
+            descs_en = load_augment_descriptions(
+                cache_dir,
+                locale="en_us",
+                cache_name="lol_stringtable_en_us.json",
+            )
+            for aid, txt in descs_en.items():
+                if aid in by_id:
+                    by_id[aid]["desc_en"] = txt
+        except Exception as exc:
+            click.echo(f"[tierlist] WARN: en-US augment description fetch failed: {exc}")
 
     for aid, txt in AUGMENT_DESC_OVERRIDES.items():
         if aid in by_id:
             by_id[aid]["desc"] = txt
+            by_id[aid]["desc_zh"] = txt
 
     return by_id
 
@@ -819,6 +998,7 @@ def render_html(
         by_tier[tier].append({**r, **meta})
 
     header_title, queue_label = _queue_copy(queue_id)
+    header_title_en = "ARAM Mayhem Database" if queue_id == 2400 else queue_label
     patch_label = f"patch {patch_prefix}.*" if patch_prefix else "all patches"
 
     # Build the JS data payload. Keep it slim: only champs we render + their
@@ -865,6 +1045,8 @@ def render_html(
         ]
         js_champs[str(cid)] = {
             "name": meta["name"],
+            "name_zh": meta.get("name_zh", meta["name"]),
+            "name_en": meta.get("name_en", meta.get("alias", meta["name"])),
             "alias": meta.get("alias", ""),
             "image": meta.get("image", ""),
             "tags": meta.get("tags") or [],
@@ -875,9 +1057,16 @@ def render_html(
     js_augs = {
         str(aid): {
             "name": aug_meta[aid]["name"],
+            "name_zh": aug_meta[aid].get("name_zh", aug_meta[aid]["name"]),
+            "name_en": aug_meta[aid].get("name_en", aug_meta[aid]["name"]),
             "icon": aug_meta[aid]["icon"],
             "rarity": aug_meta[aid].get("rarity", ""),
             "desc": aug_meta[aid].get("desc", ""),
+            "desc_zh": aug_meta[aid].get("desc_zh", aug_meta[aid].get("desc", "")),
+            "desc_en": aug_meta[aid].get("desc_en", ""),
+            "set": aug_meta[aid].get("set", ""),
+            "setSlug": aug_meta[aid].get("setSlug", ""),
+            "sets": aug_meta[aid].get("sets", []),
         }
         for aid in used_aug_ids
         if aid in aug_meta
@@ -916,6 +1105,12 @@ def render_html(
         gap: 16px;
         margin-bottom: 16px;
     }
+    .page-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
     .app-shell {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
@@ -926,6 +1121,7 @@ def render_html(
         grid-template-columns: minmax(0, 1fr) 320px;
     }
     .main-col { min-width: 0; }
+    .icon-btn,
     .gh-star {
         display: inline-flex;
         align-items: center;
@@ -941,8 +1137,16 @@ def render_html(
         white-space: nowrap;
         transition: background 0.12s, border-color 0.12s;
     }
+    .icon-btn {
+        cursor: pointer;
+        font: inherit;
+    }
+    .icon-btn:hover,
     .gh-star:hover { background: #30363d; border-color: #58606b; }
+    .icon-btn svg,
     .gh-star svg { flex-shrink: 0; }
+    .lang-toggle { min-width: 56px; justify-content: center; }
+    .lang-toggle span { font-size: 12px; letter-spacing: 0; }
     /* Filter bar: role chips + free-text search + live count. */
     .filter-bar {
         display: flex;
@@ -1614,6 +1818,20 @@ def render_html(
         color: #9aa0a6;
         margin-top: 1px;
     }
+    .aug .aset {
+        display: inline-block;
+        max-width: 100%;
+        margin-top: 3px;
+        padding: 1px 5px;
+        border-radius: 999px;
+        background: rgba(86, 180, 211, 0.14);
+        color: #8fd8f4;
+        font-size: 8px;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
     /* Custom hover popup with augment description.  Native title is kept too
        as an accessibility/fallback path. */
     .aug-tip {
@@ -1675,6 +1893,11 @@ def render_html(
         font-size: 10px;
         border-top: 1px solid rgba(255,255,255,0.08);
         padding-top: 4px;
+    }
+    .aug-tip-set {
+        color: #8fd8f4;
+        font-size: 10px;
+        margin-bottom: 4px;
     }
     .aug.rarity-kGold   { box-shadow: inset 0 0 0 2px #f5c518; }
     .aug.rarity-kSilver { box-shadow: inset 0 0 0 2px #c0c5cc; }
@@ -1775,9 +1998,21 @@ def render_html(
         body.rec-modal-open { overflow: hidden; }
         h1 { font-size: 18px; }
         .subtitle { font-size: 12px; }
-        /* Header stacks: title row, then GitHub button below at full width. */
-        .page-header { flex-direction: column; gap: 8px; margin-bottom: 12px; }
-        .gh-star { align-self: flex-start; }
+        /* Keep title/subtitle on the left and utility actions pinned to the
+           top-right corner, so the header doesn't burn a full extra row. */
+        .page-header {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 8px 10px;
+            margin-bottom: 12px;
+        }
+        .page-header > div:first-child { min-width: 0; }
+        .page-actions {
+            justify-self: end;
+            align-self: start;
+            flex-wrap: nowrap;
+        }
         /* Filter bar wraps tighter; search input becomes full-width on
            its own row. */
         .filter-bar { padding: 8px; gap: 8px; }
@@ -1836,21 +2071,25 @@ def render_html(
         .aug img { width: 36px; height: 36px; }
         .aug .aname { font-size: 9px; min-height: 22px; }
         .aug .awr { font-size: 10px; }
-        /* Hide the lift% / games count on mobile — keep cards compact.
+        /* Hide the lift% / games count on mobile - keep cards compact.
            Numbers still available on hover (tooltip) and via the title attr. */
         .aug .alift { display: none; }
+        .aug .aset { display: none; }
         .aug-tip { width: 170px; font-size: 10px; }
         /* Touch-target floor (WCAG 2.5.5).  Chips were 4×10 padding on 11px
            font ≈ 32 px tall.  Bump to a real 44 px tap area without growing
            the visual pill, by adding transparent vertical padding. */
         .chip { padding: 8px 12px; font-size: 11px; min-height: 36px; }
+        .icon-btn,
         .gh-star { padding: 8px 14px; min-height: 36px; }
+        .lang-toggle { min-width: 0; }
     }
     /* Keyboard a11y: every interactive element gets a visible focus ring
        when focused via keyboard (not mouse click).  Uses the tier accent
        (or a neutral white when no tier is in scope) and stays well clear
        of the resting border colour. */
     .chip:focus-visible,
+    .icon-btn:focus-visible,
     .gh-star:focus-visible,
     .tool-btn:focus-visible,
     .side-close:focus-visible,
@@ -1902,10 +2141,10 @@ def render_html(
     meta_lines.append(f"<meta property='og:description' content=\"{og_desc}\">")
     if og_image:
         meta_lines.append(f"<meta property='og:image' content='{og_image}'>")
-        meta_lines.append("<meta property='og:image:width' content='1200'>")
-        meta_lines.append("<meta property='og:image:height' content='630'>")
+        meta_lines.append("<meta property='og:image:width' content='512'>")
+        meta_lines.append("<meta property='og:image:height' content='512'>")
         meta_lines.append("<meta property='og:image:alt' content='ARAM Mayhem Database preview'>")
-        meta_lines.append("<meta name='twitter:card' content='summary_large_image'>")
+        meta_lines.append("<meta name='twitter:card' content='summary'>")
         meta_lines.append(f"<meta name='twitter:image' content='{og_image}'>")
         meta_lines.append("<meta name='twitter:image:alt' content='ARAM Mayhem Database preview'>")
     else:
@@ -1930,12 +2169,21 @@ def render_html(
         "&display=swap' rel='stylesheet'>"
     )
     parts.append(f"<style>{css}</style></head><body>")
-    # Header: title + subtitle on the left, "Star on GitHub" CTA on the right.
+    # Header: title + subtitle on the left, language toggle + GitHub star on the right.
     # The repo name is the canonical project URL; if the user later forks /
     # renames, update REPO_URL below.
     REPO_URL = "https://github.com/Lanternko/ARAM-Mayhem-Database"
     short_patch = f"patch {patch_prefix}" if patch_prefix else "全 patch"
     date_str = f"更新於 {build_date}" if build_date else "日期未標"
+    globe_icon = (
+        "<svg viewBox='0 0 24 24' width='16' height='16' fill='none' "
+        "stroke='currentColor' stroke-width='2' stroke-linecap='round' "
+        "stroke-linejoin='round' aria-hidden='true'>"
+        "<circle cx='12' cy='12' r='10'></circle>"
+        "<path d='M2 12h20'></path>"
+        "<path d='M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z'></path>"
+        "</svg>"
+    )
     gh_icon = (
         "<svg viewBox='0 0 16 16' width='14' height='14' fill='currentColor' "
         "aria-hidden='true'><path d='M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1"
@@ -1951,20 +2199,27 @@ def render_html(
     )
     parts.append("<div class='page-header'>")
     parts.append("<div>")
-    parts.append(f"<h1>{header_title}</h1>")
+    parts.append(f"<h1 id='site-title'>{header_title}</h1>")
     parts.append(
-        f"<div class='subtitle'>"
-        f"{short_patch} · {date_str} ({total_games:,} games)<br>"
-        "點擊英雄看 augment / 搭檔；開啟「選擇你的隊友」後，可選 1~4 隻英雄看推薦"
+        f"<div class='subtitle' id='site-subtitle'>"
+        f"{short_patch} · {date_str} ({total_games:,} games)"
         f"</div>"
     )
     parts.append("</div>")
+    parts.append("<div class='page-actions'>")
+    parts.append(
+        "<button class='icon-btn lang-toggle' id='lang-toggle' type='button' "
+        "title='Switch to English' aria-label='切換語言'>"
+        f"{globe_icon}<span id='lang-toggle-label'>EN</span>"
+        "</button>"
+    )
     parts.append(
         f"<a class='gh-star' href='{REPO_URL}' target='_blank' rel='noopener' "
         f"title='覺得有用請幫忙按 Star ⭐'>"
         f"{gh_icon} Star on GitHub"
         f"</a>"
     )
+    parts.append("</div>")
     parts.append("</div>")  # /page-header
     parts.append("<div class='app-shell'>")
     parts.append("<div class='main-col'>")
@@ -1972,7 +2227,7 @@ def render_html(
     # Filter bar: role chips + free-text search + live "N shown" counter.
     parts.append("<div class='filter-bar'>")
     parts.append("<div class='role-chips'>")
-    parts.append('<button class="chip active" data-role="">★ All</button>')
+    parts.append('<button class="chip active" data-role="" data-label-zh="★ All" data-label-en="★ All">★ All</button>')
     for role_en, role_zh in [
         ("Assassin", "刺客"),
         ("Fighter", "戰士"),
@@ -1982,7 +2237,8 @@ def render_html(
         ("Tank", "坦克"),
     ]:
         parts.append(
-            f'<button class="chip" data-role="{role_en}">{role_zh}</button>'
+            f'<button class="chip" data-role="{role_en}" data-label-zh="{role_zh}" '
+            f'data-label-en="{role_en}">{role_zh}</button>'
         )
     parts.append("</div>")  # /role-chips
     parts.append("<div class='filter-tools'>")
@@ -2012,7 +2268,8 @@ def render_html(
         "</label>"
     )
     parts.append(
-        f'<span class="shown-count"><span id="shown-n">{len(records)}</span> / {len(records)} 隻</span>'
+        f'<span class="shown-count"><span id="shown-n">{len(records)}</span> / {len(records)} '
+        "<span id='shown-unit'>隻</span></span>"
     )
     parts.append("</div>")  # /filter-tools
     parts.append("</div>")  # /filter-bar
@@ -2035,7 +2292,7 @@ def render_html(
         parts.append(
             f"<span class='tier-count'>"
             f"<span class='tier-count-num' data-tier='{tier}'>{len(entries)}</span>"
-            " 隻"
+            " <span class='tier-count-unit'>隻</span>"
             "</span>"
         )
         parts.append("</h2>")
@@ -2053,7 +2310,11 @@ def render_html(
             aria_label = f"{r['name']} {alias}，tier {tier}，勝率 {wr_pct}"
             parts.append(
                 f"<div class='champ' data-cid='{r['champion_id']}' "
+                f"data-name-zh=\"{html.escape(r['name'])}\" "
+                f"data-name-en=\"{html.escape(meta.get('name_en', alias or r['name']))}\" "
                 f"data-tags='{tag_str}' data-search=\"{search_blob}\" "
+                f"data-tier='{tier}' data-wr='{wr_pct}' data-games='{r['games']}' "
+                f"data-raw-wr='{r['raw_wr']*100:.1f}%' "
                 f"role='button' tabindex='0' "
                 f"aria-label=\"{aria_label}\" "
                 f"title=\"{title}\">"
@@ -2076,8 +2337,8 @@ def render_html(
     # Empty state — toggled by JS when all tiers are filtered out.
     parts.append(
         "<div class='empty-state' id='empty-state'>"
-        "<strong>沒有符合條件的英雄</strong>"
-        "換個角色篩選，或試試英雄中／英文名。"
+        "<strong id='empty-title'>沒有符合條件的英雄</strong>"
+        "<span id='empty-copy'>換個角色篩選，或試試英雄中／英文名。</span>"
         "</div>"
     )
 
@@ -2095,7 +2356,7 @@ def render_html(
     )
     if build_date:
         parts.append(
-            f"<div class='freshness'>資料截至 {build_date}（{patch_label}）</div>"
+            f"<div class='freshness' id='freshness-copy'>資料截至 {build_date}（{patch_label}）</div>"
         )
     parts.append(
         "<div class='disclaimer'>"
@@ -2112,8 +2373,8 @@ def render_html(
         "<aside class='side-panel' id='side-panel'>"
         "<div class='side-head'>"
         "<div>"
-        "<h2>推薦組合排行</h2>"
-        "<div class='side-sub'>"
+        "<h2 id='side-title'>推薦組合排行</h2>"
+        "<div class='side-sub' id='side-sub'>"
         "Residual：兩隻英雄同隊的實際勝率 - 預期勝率。<br>"
         "z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>"
         "排行依排序分排列：平均 residual × 覆蓋率。"
@@ -2134,24 +2395,156 @@ def render_html(
     const pct = x => (x * 100).toFixed(1) + '%';
     const signed = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
     const escHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const HEADER_TITLE_ZH = __HEADER_TITLE_ZH__;
+    const HEADER_TITLE_EN = __HEADER_TITLE_EN__;
+    const SHORT_PATCH_ZH = __SHORT_PATCH_ZH__;
+    const DATE_STR_ZH = __DATE_STR_ZH__;
+    const BUILD_DATE = __BUILD_DATE__;
+    const PATCH_LABEL = __PATCH_LABEL__;
+    const TOTAL_GAMES = __TOTAL_GAMES__;
+    const LANG_KEY = 'aram-mayhem-site-lang';
+    const COPY = {
+        zh: {
+            htmlLang: 'zh-Hant',
+            subtitle: () => `${SHORT_PATCH_ZH} · ${DATE_STR_ZH} (${TOTAL_GAMES} games)`,
+            searchPlaceholder: '搜尋英雄（中 / 英）   Ctrl+F',
+            searchAria: '搜尋英雄',
+            shownUnit: '隻',
+            tierUnit: '隻',
+            recModeOn: '選擇你的隊友：開',
+            recModeOff: '選擇你的隊友：關',
+            clearPicks: '清空選取',
+            emptyTitle: '沒有符合條件的英雄',
+            emptyCopy: '換個角色篩選，或試試英雄中／英文名。',
+            freshness: () => `資料截至 ${BUILD_DATE}（${PATCH_LABEL}）`,
+            sideTitle: '推薦組合排行',
+            sideSub: 'Residual：兩隻英雄同隊的實際勝率 - 預期勝率。<br>z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>排行依排序分排列：平均 residual × 覆蓋率。',
+            closeRecs: '關閉推薦組合',
+            openRecs: n => `看推薦組合 (${n})`,
+            langToggleLabel: 'EN',
+            langToggleTitle: 'Switch to English',
+            langToggleAria: '切換語言',
+            removePick: name => `移除 ${name}`,
+            pickEmpty: '尚未選擇',
+            maxOnly: n => `最多只能選 ${n} 隻英雄。`,
+            pickNoteEmpty: n => `最多選 ${n} 隻；排序分 = 平均 residual × 覆蓋率，未覆蓋的 pair 視為 0。`,
+            pickNotePartial: want => `目前沒有 ${want}/${want} 全覆蓋候選，以下改用部分 pair 資料排序。`,
+            pickNoteReady: (want, minGames) => `已選 ${want}/${MAX_TEAM_PICKS} 隻；pair 門檻 >= ${minGames} 場。`,
+            panelEmpty: '先開啟「選擇你的隊友」，再從英雄列表點 1~4 隻英雄。系統會排出最適合補進來的英雄。',
+            panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
+            detailEmpty: '這個英雄目前沒有可顯示的資料。',
+            detailMeta: '左邊看 augment，下面看同隊兩兩搭檔',
+            augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
+            pairSectionTitle: '搭檔組合',
+            pairSectionMeta: minGames => `同隊兩兩組合，依 residual 相性排名，至少 ${minGames} 場`,
+            best: '最佳',
+            worst: '最差',
+            insufficient: '資料不足',
+            rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
+            augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
+            augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
+            augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
+            mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
+            mateMeta: (lift, zText, games) => `${lift} residual · z ${zText} · ${games}場`,
+            expected: value => ` · 預期 ${value}`,
+            detailSectionTitle: 'Augment',
+            recRowTitle: (name, fit, liftAvg) => `${name} · 排序分 ${fit} · 平均 residual ${liftAvg}`,
+            recRowMeta: (fit, liftAvg, zAvg, minGames, coverage) => `排序 ${fit} · ${liftAvg} residual · z <span class="z">${zAvg}</span> · min ${minGames}場（${coverage}）`,
+            champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
+            champCardAria: (name, alias, tier, wr) => `${name} ${alias}，tier ${tier}，勝率 ${wr}`,
+        },
+        en: {
+            htmlLang: 'en',
+            subtitle: () => `${PATCH_LABEL} · Updated ${BUILD_DATE} (${TOTAL_GAMES} games)`,
+            searchPlaceholder: 'Search champions (ZH / EN)   Ctrl+F',
+            searchAria: 'Search champions',
+            shownUnit: 'shown',
+            tierUnit: 'shown',
+            recModeOn: 'Teammate mode: On',
+            recModeOff: 'Teammate mode: Off',
+            clearPicks: 'Clear picks',
+            emptyTitle: 'No champions match the current filters',
+            emptyCopy: 'Try a different role, or search by Chinese / English champion name.',
+            freshness: () => `Data through ${BUILD_DATE} (${PATCH_LABEL})`,
+            sideTitle: 'Recommended teammates',
+            sideSub: 'Residual = actual same-team win rate minus expected win rate.<br>z = residual divided by standard error; higher means the signal is less likely to be sample noise.<br>Rows are ranked by average residual × coverage.',
+            closeRecs: 'Close recommendations',
+            openRecs: n => `Open recommendations (${n})`,
+            langToggleLabel: '中',
+            langToggleTitle: '切換成中文',
+            langToggleAria: 'Switch language',
+            removePick: name => `Remove ${name}`,
+            pickEmpty: 'Empty',
+            maxOnly: n => `You can only pick up to ${n} champions.`,
+            pickNoteEmpty: n => `Pick up to ${n}; score = average residual × coverage, with missing pairs treated as 0.`,
+            pickNotePartial: want => `No fully covered ${want}/${want} candidates yet, so the list falls back to partial pair coverage.`,
+            pickNoteReady: (want, minGames) => `${want}/${MAX_TEAM_PICKS} picked; pair threshold >= ${minGames} games.`,
+            panelEmpty: 'Turn on teammate mode, then click 1-4 champions in the grid. The site will rank the best additions.',
+            panelNoData: 'This combination does not have enough pair data yet.',
+            detailEmpty: 'No detail data is available for this champion yet.',
+            detailMeta: 'Augments on the left, same-team pairings below',
+            augSectionMeta: 'Best / worst 5 from each rarity',
+            pairSectionTitle: 'Pairings',
+            pairSectionMeta: minGames => `Same-team pairs ranked by residual fit, at least ${minGames} games`,
+            best: 'Best',
+            worst: 'Worst',
+            insufficient: 'Not enough data',
+            rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
+            augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games} games${desc ? ' — ' + desc : ''}`,
+            augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
+            augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
+            mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
+            mateMeta: (lift, zText, games) => `${lift} residual · z ${zText} · ${games} games`,
+            expected: value => ` · expected ${value}`,
+            detailSectionTitle: 'Augments',
+            recRowTitle: (name, fit, liftAvg) => `${name} · fit score ${fit} · average residual ${liftAvg}`,
+            recRowMeta: (fit, liftAvg, zAvg, minGames, coverage) => `fit ${fit} · ${liftAvg} residual · z <span class="z">${zAvg}</span> · min ${minGames} games (${coverage})`,
+            champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
+            champCardAria: (name, alias, tier, wr) => `${name} ${alias}, tier ${tier}, win rate ${wr}`,
+        }
+    };
+    let currentLang = 'zh';
+
+    function tr() {
+        return COPY[currentLang] || COPY.zh;
+    }
+
+    function champName(info) {
+        if (!info) return '';
+        return currentLang === 'en' ? (info.name_en || info.alias || info.name || '') : (info.name_zh || info.name || info.alias || '');
+    }
+
+    function augName(aug) {
+        if (!aug) return '';
+        return currentLang === 'en' ? (aug.name_en || aug.name || '') : (aug.name_zh || aug.name || '');
+    }
+
+    function augDesc(aug) {
+        if (!aug) return '';
+        if (currentLang === 'en') return aug.desc_en || aug.desc || '';
+        return aug.desc_zh || aug.desc || '';
+    }
 
     function buildAugCard(entry, kind) {
         const aug = DATA.augs[entry.id];
-        const name = aug ? aug.name : '#' + entry.id;
+        const name = aug ? augName(aug) : '#' + entry.id;
         const icon = aug && aug.icon ? aug.icon : '';
         const rarity = aug ? (aug.rarity || '') : '';
-        const desc = aug && aug.desc ? aug.desc : '';
-        const titleAttr = `${name} · WR ${pct(entry.wr)} · ${entry.g}場${desc ? ' — ' + desc : ''}`;
+        const desc = augDesc(aug);
+        const setName = aug && aug.set ? aug.set : '';
+        const copy = tr();
+        const titleAttr = copy.augTitle(name, setName, pct(entry.wr), entry.g, desc);
         const tooltip = `
             <div class="aug-tip">
                 <div class="aug-tip-name">${escHtml(name)}</div>
+                ${setName ? `<div class="aug-tip-set">Set: ${escHtml(setName)}</div>` : ''}
                 ${desc ? `<div class="aug-tip-desc">${escHtml(desc)}</div>` : ''}
-                <div class="aug-tip-stat">WR ${pct(entry.wr)} · ${signed(entry.lift)} · ${entry.g}場</div>
+                <div class="aug-tip-stat">${copy.augTipStat(pct(entry.wr), signed(entry.lift), entry.g)}</div>
             </div>
         `;
         // Augment card carries its own ARIA semantics so screen readers and
         // keyboard users get the same info hover tooltip shows.
-        const ariaLabel = `${name}，勝率 ${pct(entry.wr)}，相對基準 ${signed(entry.lift)}，樣本 ${entry.g} 場${desc ? '，' + desc : ''}`;
+        const ariaLabel = copy.augAria(name, pct(entry.wr), signed(entry.lift), entry.g, desc);
         return `
             <div class="aug ${kind} rarity-${rarity}"
                  tabindex="0"
@@ -2161,25 +2554,27 @@ def render_html(
                 <div class="aname">${escHtml(name)}</div>
                 <div class="awr">${pct(entry.wr)}</div>
                 <div class="alift">${signed(entry.lift)} · ${entry.g}場</div>
+                ${setName ? `<div class="aset">${escHtml(setName)}</div>` : ''}
                 ${tooltip}
             </div>
         `;
     }
 
     const RARITIES = [
-        { key: 'kPrismatic', label: '彩色', css: 'prismatic' },
-        { key: 'kGold',      label: '金色', css: 'gold' },
-        { key: 'kSilver',    label: '銀色', css: 'silver' },
+        { key: 'kPrismatic', css: 'prismatic' },
+        { key: 'kGold',      css: 'gold' },
+        { key: 'kSilver',    css: 'silver' },
     ];
 
     function buildRarityRow(items, kind, r) {
+        const copy = tr();
         const cards = (items || []).map(e => buildAugCard(e, kind)).join('');
         const body = cards
             ? `<div class="aug-list">${cards}</div>`
-            : `<div class="aug-list empty-list">資料不足</div>`;
+            : `<div class="aug-list empty-list">${copy.insufficient}</div>`;
         return `
             <div class="rarity-row">
-                <div class="rlabel ${r.css}">${r.label}</div>
+                <div class="rlabel ${r.css}">${copy.rarityLabels[r.key]}</div>
                 ${body}
             </div>
         `;
@@ -2188,8 +2583,9 @@ def render_html(
     function renderDetail(cid) {
         const info = DATA.champs[cid];
         if (!info) {
-            return `<div class="empty">這個英雄目前沒有可顯示的資料。</div>`;
+            return `<div class="empty">${tr().detailEmpty}</div>`;
         }
+        const copy = tr();
         const top = info.top || {};
         const bot = info.bot || {};
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
@@ -2199,59 +2595,59 @@ def render_html(
         const mateBot = [...pairs].slice(-5).reverse();
         const buildMateCard = (entry, kind) => {
             const mate = DATA.champs[String(entry.id)];
-            const name = mate ? mate.name : ('#' + entry.id);
+            const name = mate ? champName(mate) : ('#' + entry.id);
             const image = mate && mate.image ? mate.image : '';
             const zText = `${entry.z >= 0 ? '+' : ''}${entry.z.toFixed(2)}`;
-            const expectedText = entry.expected !== undefined ? ` · 預期 ${pct(entry.expected)}` : '';
-            const titleAttr = `${name} · WR ${pct(entry.wr)}${expectedText} · residual ${signed(entry.lift)} · z ${zText} · ${entry.g}場`;
+            const expectedText = entry.expected !== undefined ? copy.expected(pct(entry.expected)) : '';
+            const titleAttr = copy.mateTitle(name, pct(entry.wr), expectedText, signed(entry.lift), zText, entry.g);
             return `
                 <div class="mate-card ${kind}" title="${escHtml(titleAttr)}">
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:#2a3142"></div>'}
                     <div>
                         <div class="mname">${escHtml(name)}</div>
                         <div class="mwr">${pct(entry.wr)}</div>
-                        <div class="mmeta">${signed(entry.lift)} residual · z ${zText} · ${entry.g}場</div>
+                        <div class="mmeta">${copy.mateMeta(signed(entry.lift), zText, entry.g)}</div>
                     </div>
                 </div>
             `;
         };
         const buildMateList = (items, kind) => {
-            if (!items.length) return `<div class="mate-list empty-list">資料不足</div>`;
+            if (!items.length) return `<div class="mate-list empty-list">${copy.insufficient}</div>`;
             return `<div class="mate-list">${items.map(entry => buildMateCard(entry, kind)).join('')}</div>`;
         };
         return `
             <div class="detail-head">
-                <span class="cname">${info.name}</span>
-                <span class="cmeta">左邊看 augment，下面看同隊兩兩搭檔</span>
+                <span class="cname">${champName(info)}</span>
+                <span class="cmeta">${copy.detailMeta}</span>
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
-                    <h3>Augment</h3>
-                    <span class="section-meta">每種稀有度各取最佳 / 最差 5 個</span>
+                    <h3>${copy.detailSectionTitle}</h3>
+                    <span class="section-meta">${copy.augSectionMeta}</span>
                 </div>
                 <div class="detail-cols">
                     <div class="detail-col best">
-                        <h3>最佳</h3>
+                        <h3>${copy.best}</h3>
                         ${topRows}
                     </div>
                     <div class="detail-col worst">
-                        <h3>最差</h3>
+                        <h3>${copy.worst}</h3>
                         ${botRows}
                     </div>
                 </div>
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
-                    <h3>搭檔組合</h3>
-                    <span class="section-meta">同隊兩兩組合，依 residual 相性排名，至少 ${DATA.min_synergy_games} 場</span>
+                    <h3>${copy.pairSectionTitle}</h3>
+                    <span class="section-meta">${copy.pairSectionMeta(DATA.min_synergy_games)}</span>
                 </div>
                 <div class="detail-cols">
                     <div class="detail-col best">
-                        <h3>最佳</h3>
+                        <h3>${copy.best}</h3>
                         ${buildMateList(mateTop, 'good')}
                     </div>
                     <div class="detail-col worst">
-                        <h3>最差</h3>
+                        <h3>${copy.worst}</h3>
                         ${buildMateList(mateBot, 'bad')}
                     </div>
                 </div>
@@ -2346,6 +2742,7 @@ def render_html(
     }
 
     function renderSidePanel() {
+        const copy = tr();
         const shell = document.querySelector('.app-shell');
         const panel = document.getElementById('side-panel');
         const fab = document.getElementById('rec-fab');
@@ -2363,24 +2760,24 @@ def render_html(
         panel.classList.toggle('is-hidden', !showPanel || (isMobile && !recModalOpen));
         if (fab) {
             fab.classList.toggle('is-hidden', !(showPanel && isMobile && !recModalOpen));
-            fab.textContent = `看推薦組合 (${teamPicks.length})`;
+            fab.textContent = copy.openRecs(teamPicks.length);
         }
         if (!showPanel) return;
 
         const chips = [];
         teamPicks.forEach((cid, idx) => {
             const info = DATA.champs[cid];
-            const name = info ? info.name : ('#' + cid);
+            const name = info ? champName(info) : ('#' + cid);
             const image = info && info.image ? info.image : '';
             chips.push(
-                `<button class="pick-chip" type="button" data-remove-cid="${cid}" title="移除 ${escHtml(name)}">` +
+                `<button class="pick-chip" type="button" data-remove-cid="${cid}" title="${escHtml(copy.removePick(name))}">` +
                 `<span class="ord">${idx + 1}</span>` +
                 (image ? `<img loading="lazy" src="${image}" alt="">` : '') +
                 `<span>${escHtml(name)}</span></button>`
             );
         });
         for (let i = teamPicks.length; i < MAX_TEAM_PICKS; i += 1) {
-            chips.push(`<div class="pick-chip empty"><span class="ord">${i + 1}</span>尚未選擇</div>`);
+            chips.push(`<div class="pick-chip empty"><span class="ord">${i + 1}</span>${copy.pickEmpty}</div>`);
         }
         slots.innerHTML = chips.join('');
 
@@ -2390,30 +2787,36 @@ def render_html(
         if (pickNotice) {
             note.textContent = pickNotice;
         } else if (!teamPicks.length) {
-            note.textContent = `最多選 ${MAX_TEAM_PICKS} 隻；排序分 = 平均 residual × 覆蓋率，未覆蓋的 pair 視為 0。`;
+            note.textContent = copy.pickNoteEmpty(MAX_TEAM_PICKS);
         } else if (want > 1 && !hasFull) {
-            note.textContent = `目前沒有 ${want}/${want} 全覆蓋候選，以下改用部分 pair 資料排序。`;
+            note.textContent = copy.pickNotePartial(want);
         } else {
-            note.textContent = `已選 ${want}/${MAX_TEAM_PICKS} 隻；pair 門檻 >= ${DATA.min_synergy_games} 場。`;
+            note.textContent = copy.pickNoteReady(want, DATA.min_synergy_games);
         }
 
         if (!teamPicks.length) {
-            recList.innerHTML = `<div class="panel-empty">先開啟「選擇你的隊友」，再從英雄列表點 1~4 隻英雄。系統會排出最適合補進來的英雄。</div>`;
+            recList.innerHTML = `<div class="panel-empty">${copy.panelEmpty}</div>`;
             return;
         }
         if (!recs.length) {
-            recList.innerHTML = `<div class="panel-empty">這組英雄目前沒有足夠的 pair 資料。</div>`;
+            recList.innerHTML = `<div class="panel-empty">${copy.panelNoData}</div>`;
             return;
         }
 
         recList.innerHTML = recs.slice(0, REC_LIST_LIMIT).map((row, idx) => {
             const info = DATA.champs[row.id];
-            const name = info ? info.name : ('#' + row.id);
+            const name = info ? champName(info) : ('#' + row.id);
             const image = info && info.image ? info.image : '';
             const coverage = `${row.coverage}/${want}`;
-            const meta = `排序 ${signed(row.fitScore)} · ${signed(row.liftAvg)} residual · z <span class="z">${zFmt(row.zAvg)}</span> · min ${row.minGames}場（${coverage}）`;
+            const meta = copy.recRowMeta(
+                signed(row.fitScore),
+                signed(row.liftAvg),
+                zFmt(row.zAvg),
+                row.minGames,
+                coverage,
+            );
             return `
-                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(name)} · 排序分 ${signed(row.fitScore)} · 平均 residual ${signed(row.liftAvg)}">
+                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(copy.recRowTitle(name, signed(row.fitScore), signed(row.liftAvg)))}">
                     <span class="rec-rank">${idx + 1}</span>
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
                     <span class="rec-main">
@@ -2425,6 +2828,80 @@ def render_html(
         }).join('');
     }
 
+    function updateChampCardCopy() {
+        document.querySelectorAll('.champ').forEach(champ => {
+            const cid = champ.getAttribute('data-cid');
+            const info = DATA.champs[cid];
+            if (!info) return;
+            const name = champName(info);
+            const alias = info.alias || '';
+            const tier = champ.getAttribute('data-tier') || '';
+            const wr = champ.getAttribute('data-wr') || '';
+            const games = champ.getAttribute('data-games') || '';
+            const raw = champ.getAttribute('data-raw-wr') || '';
+            const nameEl = champ.querySelector('.name');
+            if (nameEl) nameEl.textContent = name;
+            champ.setAttribute('title', tr().champCardTitle(name, wr, games, raw));
+            champ.setAttribute('aria-label', tr().champCardAria(name, alias, tier, wr));
+        });
+    }
+
+    function applyLanguage(nextLang) {
+        currentLang = nextLang === 'en' ? 'en' : 'zh';
+        const copy = tr();
+        document.documentElement.lang = copy.htmlLang;
+        try { localStorage.setItem(LANG_KEY, currentLang); } catch {}
+
+        const titleEl = document.getElementById('site-title');
+        if (titleEl) titleEl.textContent = currentLang === 'en' ? HEADER_TITLE_EN : HEADER_TITLE_ZH;
+        const subtitleEl = document.getElementById('site-subtitle');
+        if (subtitleEl) subtitleEl.innerHTML = copy.subtitle();
+        const searchEl = document.getElementById('champ-search');
+        if (searchEl) {
+            searchEl.placeholder = copy.searchPlaceholder;
+            searchEl.setAttribute('aria-label', copy.searchAria);
+        }
+        const shownUnit = document.getElementById('shown-unit');
+        if (shownUnit) shownUnit.textContent = copy.shownUnit;
+        document.querySelectorAll('.tier-count-unit').forEach(el => {
+            el.textContent = copy.tierUnit;
+        });
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.textContent = currentLang === 'en'
+                ? (chip.getAttribute('data-label-en') || chip.textContent || '')
+                : (chip.getAttribute('data-label-zh') || chip.textContent || '');
+        });
+        const clearBtn = document.getElementById('clear-picks');
+        if (clearBtn) clearBtn.textContent = copy.clearPicks;
+        const emptyTitle = document.getElementById('empty-title');
+        if (emptyTitle) emptyTitle.textContent = copy.emptyTitle;
+        const emptyCopy = document.getElementById('empty-copy');
+        if (emptyCopy) emptyCopy.textContent = copy.emptyCopy;
+        const freshness = document.getElementById('freshness-copy');
+        if (freshness) freshness.textContent = copy.freshness();
+        const sideTitle = document.getElementById('side-title');
+        if (sideTitle) sideTitle.textContent = copy.sideTitle;
+        const sideSub = document.getElementById('side-sub');
+        if (sideSub) sideSub.innerHTML = copy.sideSub;
+        const sideClose = document.getElementById('side-close');
+        if (sideClose) sideClose.setAttribute('aria-label', copy.closeRecs);
+        const toggle = document.getElementById('lang-toggle');
+        const toggleLabel = document.getElementById('lang-toggle-label');
+        if (toggle) {
+            toggle.title = copy.langToggleTitle;
+            toggle.setAttribute('aria-label', copy.langToggleAria);
+        }
+        if (toggleLabel) toggleLabel.textContent = copy.langToggleLabel;
+
+        updateChampCardCopy();
+        setRecommendMode(recommendMode);
+        renderSidePanel();
+        if (detailSelected) {
+            const champ = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
+            if (champ) openDetailForChamp(champ, true);
+        }
+    }
+
     function setRecommendMode(next) {
         recommendMode = Boolean(next);
         if (!recommendMode) recModalOpen = false;
@@ -2432,10 +2909,10 @@ def render_html(
         if (!btn) return;
         btn.classList.toggle('active', recommendMode);
         btn.setAttribute('aria-pressed', recommendMode ? 'true' : 'false');
-        btn.textContent = recommendMode ? '選擇你的隊友：開' : '選擇你的隊友：關';
+        btn.textContent = recommendMode ? tr().recModeOn : tr().recModeOff;
     }
 
-    function openDetailForChamp(champ) {
+    function openDetailForChamp(champ, force = false) {
         const cid = champ.getAttribute('data-cid');
         const block = champ.closest('.tier-block');
         const host  = block.querySelector('.detail-host');
@@ -2448,7 +2925,7 @@ def render_html(
             if (el !== host) el.innerHTML = '';
         });
 
-        if (detailSelected === cid && host.firstChild) {
+        if (!force && detailSelected === cid && host.firstChild) {
             host.innerHTML = '';
             champ.classList.remove('detail-selected');
             detailSelected = null;
@@ -2481,7 +2958,7 @@ def render_html(
         if (idx !== -1) {
             teamPicks.splice(idx, 1);
         } else if (teamPicks.length >= MAX_TEAM_PICKS) {
-            pickNotice = `最多只能選 ${MAX_TEAM_PICKS} 隻英雄。`;
+            pickNotice = tr().maxOnly(MAX_TEAM_PICKS);
         } else {
             teamPicks.push(cid);
         }
@@ -2490,6 +2967,11 @@ def render_html(
     }
 
     document.addEventListener('click', (ev) => {
+        const langBtn = ev.target.closest('#lang-toggle');
+        if (langBtn) {
+            applyLanguage(currentLang === 'en' ? 'zh' : 'en');
+            return;
+        }
         const fabBtn = ev.target.closest('#rec-fab');
         if (fabBtn) {
             recModalOpen = true;
@@ -2559,9 +3041,15 @@ def render_html(
         }, 120);
     });
 
+    try {
+        const savedLang = localStorage.getItem(LANG_KEY);
+        if (savedLang === 'en' || savedLang === 'zh') currentLang = savedLang;
+    } catch {}
+
     setRecommendMode(false);
     syncPickDecorations();
     renderSidePanel();
+    applyLanguage(currentLang);
 
     /* -----  Filter / search  --------------------------------------- */
 
@@ -2697,6 +3185,13 @@ def render_html(
     });
     """
     js = js.replace("__PAYLOAD__", payload_json)
+    js = js.replace("__HEADER_TITLE_ZH__", json.dumps(header_title, ensure_ascii=False))
+    js = js.replace("__HEADER_TITLE_EN__", json.dumps(header_title_en, ensure_ascii=False))
+    js = js.replace("__SHORT_PATCH_ZH__", json.dumps(short_patch, ensure_ascii=False))
+    js = js.replace("__DATE_STR_ZH__", json.dumps(date_str, ensure_ascii=False))
+    js = js.replace("__BUILD_DATE__", json.dumps(build_date, ensure_ascii=False))
+    js = js.replace("__PATCH_LABEL__", json.dumps(patch_label, ensure_ascii=False))
+    js = js.replace("__TOTAL_GAMES__", json.dumps(f"{total_games:,}", ensure_ascii=False))
     parts.append(f"<script>{js}</script>")
     parts.append("</body></html>")
     return "".join(parts)
@@ -2793,7 +3288,7 @@ def main(
             click.echo(f"[tierlist] wrote {og_asset_path}  ({og_asset_path.stat().st_size:,} bytes)")
             if site_url:
                 og_version = (build_date or _dt.date.today().isoformat()).replace("-", "")
-                og_image = site_url.rstrip("/") + "/" + og_asset_path.name + f"?v={og_version}"
+                og_image = site_url.rstrip("/") + "/" + og_asset_path.name + f"?v={og_version}-thumb"
         except Exception as exc:
             click.echo(f"[tierlist] WARN: og image generation failed: {exc}")
 
