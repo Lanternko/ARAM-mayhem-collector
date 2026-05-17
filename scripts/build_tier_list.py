@@ -269,7 +269,7 @@ def write_og_image(
     total_games: int,
 ) -> None:
     """Write a square top-champion thumbnail for Open Graph cards."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFilter
 
     top_record = records[0] if records else None
     top_meta = champ_meta.get(top_record["champion_id"]) if top_record else None
@@ -282,7 +282,60 @@ def write_og_image(
     card_x, card_y, card_size = 58, 58, 396
     frame_box = (card_x - 24, card_y - 24, card_x + card_size + 24, card_y + card_size + 24)
     draw.rounded_rectangle(frame_box, radius=36, fill="#080a10")
-    _draw_prismatic_frame(img, frame_box, 36)
+
+    x1, y1, x2, y2 = frame_box
+    radius = 36
+    border_w = 14
+    stops = [
+        (0.00, (216, 184, 255)),
+        (0.28, (188, 214, 255)),
+        (0.56, (255, 213, 236)),
+        (0.82, (231, 213, 255)),
+        (1.00, (216, 184, 255)),
+    ]
+
+    def sample(t: float) -> tuple[int, int, int, int]:
+        for idx in range(len(stops) - 1):
+            left_t, left = stops[idx]
+            right_t, right = stops[idx + 1]
+            if t <= right_t:
+                local = 0.0 if right_t == left_t else (t - left_t) / (right_t - left_t)
+                rgb = tuple(int(left[c] + (right[c] - left[c]) * local) for c in range(3))
+                return (*rgb, 255)
+        return (*stops[-1][1], 255)
+
+    ring_mask = Image.new("L", img.size, 0)
+    ring_draw = ImageDraw.Draw(ring_mask)
+    ring_draw.rounded_rectangle(frame_box, radius=radius, fill=255)
+    ring_draw.rounded_rectangle(
+        (x1 + border_w, y1 + border_w, x2 - border_w, y2 - border_w),
+        radius=radius - border_w,
+        fill=0,
+    )
+
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.rounded_rectangle((x1 - 5, y1 - 5, x2 + 5, y2 + 5), radius=radius + 5, outline=(216, 184, 255, 140), width=9)
+    glow_draw.rounded_rectangle((x1 - 10, y1 - 10, x2 + 10, y2 + 10), radius=radius + 10, outline=(188, 214, 255, 80), width=7)
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(7)))
+
+    gradient = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    px = gradient.load()
+    denom = max(1, (x2 - x1) + (y2 - y1))
+    for y in range(y1, y2 + 1):
+        for x in range(x1, x2 + 1):
+            if ring_mask.getpixel((x, y)):
+                px[x, y] = sample(((x - x1) + (y - y1)) / denom)
+    img.alpha_composite(gradient)
+
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        (x1 + border_w + 2, y1 + border_w + 2, x2 - border_w - 2, y2 - border_w - 2),
+        radius=radius - border_w - 2,
+        outline="#090c12",
+        width=4,
+    )
+
     if top_meta and top_meta.get("image"):
         try:
             resp = httpx.get(top_meta["image"], timeout=5)
