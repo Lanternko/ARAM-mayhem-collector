@@ -35,7 +35,7 @@ from .client import (
     get_suggested_players,
     lookup_summoners_by_riot_ids,
 )
-from .poller import DEFAULT_QUEUES, _parse_game_detail
+from .poller import DEFAULT_QUEUES, _parse_game_detail, _participants_payload_has_postgame_stats
 from .process import get_credentials
 
 _EMPTY_QUEUE_GRACE_SEC = 30.0
@@ -853,16 +853,29 @@ def _insert_game(con: sqlite3.Connection, record: dict) -> bool:
 
 
 def _backfill_participants_json(con: sqlite3.Connection, record: dict) -> bool:
+    row = con.execute(
+        "SELECT participants_json FROM games WHERE game_id = ?",
+        (record["game_id"],),
+    ).fetchone()
+    if row is None:
+        return False
+    current_json = str(row[0] or "")
+    new_json = json.dumps(record.get("participants", []), separators=(",", ":"))
+    if current_json:
+        if _participants_payload_has_postgame_stats(current_json):
+            return False
+        if not _participants_payload_has_postgame_stats(new_json):
+            return False
+
     before = con.total_changes
     con.execute(
         """
         UPDATE games
         SET participants_json = ?
         WHERE game_id = ?
-          AND (participants_json IS NULL OR participants_json = '')
         """,
         (
-            json.dumps(record.get("participants", []), separators=(",", ":")),
+            new_json,
             record["game_id"],
         ),
     )
