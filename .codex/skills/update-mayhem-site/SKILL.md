@@ -43,6 +43,13 @@ git push origin main
 
 GitHub Pages redeploys automatically after the push.
 
+7. After a successful deploy, always report the shipped changes back to the user. The post-deploy summary must include:
+   - the main user-visible changes that were deployed,
+   - which files were intentionally staged / deployed,
+   - whether any skill files were modified as part of this deploy (`yes` / `no`),
+   - what verification ran (for example rebuild success, syntax check, quick visual check),
+   - any known caveat or leftover local-only change that was not deployed.
+
 ## Guardrails
 
 - Always output to `docs/index.html`; never publish from `/site`.
@@ -50,4 +57,5 @@ GitHub Pages redeploys automatically after the push.
 - Never use `git add -A` or `git add .`.
 - Do not stage unrelated WIP files, especially crawler scripts, experiments, raw data, cache files, or local DB files.
 - If `scripts/build_tier_list.py` has unrelated local edits, do not stage it unless the user explicitly wants the generator changes included.
+- Do not end with only "deploy completed"; always leave the user with a short shipped-change recap so they can recover context later.
 - Default build settings are owned by `scripts/build_tier_list.py`: queue `2400`, patch prefix `16.10`, `docs/index.html`, `min-games 50`, and `min-pair-games 15`.
