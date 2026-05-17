@@ -100,7 +100,7 @@ def write_og_image(
     total_games: int,
 ) -> None:
     """Write a 1200x630 social preview image for Open Graph cards."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFilter
 
     title, _queue_label = _queue_copy(queue_id)
     patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
@@ -108,11 +108,11 @@ def write_og_image(
     top_meta = champ_meta.get(top_record["champion_id"]) if top_record else None
     top_wr = float(top_record.get("bayes_wr", 0.0)) if top_record else 0.0
 
-    img = Image.new("RGB", (1200, 630), "#0f1117")
+    img = Image.new("RGBA", (1200, 630), "#0f1117")
     draw = ImageDraw.Draw(img)
-    title_font = _load_font(74, bold=True)
-    body_font = _load_font(40)
-    meta_font = _load_font(28, bold=True)
+    title_font = _load_font(64, bold=True)
+    body_font = _load_font(36)
+    meta_font = _load_font(30, bold=True)
     small_font = _load_font(24, bold=True)
 
     # Layered blocks keep the preview readable in small chat cards.
@@ -123,25 +123,26 @@ def write_og_image(
     draw.line((64, 118, 1136, 118), fill="#57a6ff", width=4)
 
     draw.text((72, 42), "ARAM Mayhem Database", font=meta_font, fill="#65b2ff")
-    draw.text((76, 202), patch_label, font=title_font, fill="#f4f7ff")
-    draw.text((80, 314), "英雄 x 海克斯勝率、搭檔與組隊推薦", font=body_font, fill="#d6d8de")
-    draw.text((80, 382), f"{total_games:,} 場 LCU 樣本", font=meta_font, fill="#8f98aa")
+    draw.text((76, 196), title + "資料庫", font=title_font, fill="#f4f7ff")
+    draw.text((80, 306), patch_label, font=meta_font, fill="#8f98aa")
+    draw.text((80, 356), "英雄 x 海克斯勝率、搭檔與組隊推薦 by路燈", font=body_font, fill="#d6d8de")
     draw.text((76, 580), "lanternko.github.io/ARAM-Mayhem-Database", font=small_font, fill="#8f98aa")
 
     card_x, card_y, card_size = 840, 174, 260
-    draw.rounded_rectangle(
-        (card_x - 12, card_y - 12, card_x + card_size + 12, card_y + card_size + 12),
-        radius=34,
-        fill="#080a10",
-        outline="#f4b7d8",
-        width=7,
-    )
-    draw.rounded_rectangle(
-        (card_x - 4, card_y - 4, card_x + card_size + 4, card_y + card_size + 4),
-        radius=26,
-        outline="#b7d4ff",
-        width=4,
-    )
+    frame_box = (card_x - 16, card_y - 16, card_x + card_size + 16, card_y + card_size + 16)
+    draw.rounded_rectangle(frame_box, radius=36, fill="#080a10")
+    x1, y1, x2, y2 = frame_box
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.rounded_rectangle((x1 - 12, y1 - 12, x2 + 12, y2 + 12), radius=48, outline=(220, 180, 255, 150), width=14)
+    glow_draw.rounded_rectangle((x1 - 18, y1 - 18, x2 + 18, y2 + 18), radius=54, outline=(170, 210, 255, 90), width=10)
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(9)))
+    for i, color in enumerate(["#ffffff", "#e7d5ff", "#bcd6ff", "#ffd5ec", "#fff1c8", "#ffffff"]):
+        inset = i * 3
+        draw.rounded_rectangle((x1 + inset, y1 + inset, x2 - inset, y2 - inset), radius=max(4, 36 - inset), outline=color, width=4)
+    draw.rounded_rectangle((x1 + 19, y1 + 19, x2 - 19, y2 - 19), radius=18, outline="#0a0d14", width=4)
+    draw.arc((x1 + 10, y1 + 10, x2 - 10, y2 - 10), 210, 335, fill="#ffffff", width=4)
+    draw.arc((x1 + 13, y1 + 13, x2 - 13, y2 - 13), 28, 82, fill="#fff1c8", width=3)
     if top_meta and top_meta.get("image"):
         try:
             resp = httpx.get(top_meta["image"], timeout=5)
@@ -166,7 +167,7 @@ def write_og_image(
         _draw_text_fit(draw, (card_x, card_y + card_size + 34), str(top_meta.get("name", "")), small_font, "#dce4f2", 220)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path, "PNG", optimize=True)
+    img.convert("RGB").save(out_path, "PNG", optimize=True)
 
 
 def assign_tier(bayes_wr: float) -> str:
@@ -1883,8 +1884,8 @@ def render_html(
     payload_json = json.dumps(payload, ensure_ascii=False)
 
     og_patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
-    og_title = og_patch_label
-    og_desc = "英雄 x 海克斯勝率、搭檔與組隊推薦"
+    og_title = f"{header_title}資料庫"
+    og_desc = f"{og_patch_label}｜英雄 x 海克斯勝率、搭檔與組隊推薦 by路燈"
 
     meta_lines: list[str] = []
     meta_lines.append("<meta charset='utf-8'>")
