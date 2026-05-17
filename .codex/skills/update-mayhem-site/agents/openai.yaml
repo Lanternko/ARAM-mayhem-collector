@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Mayhem Site"
+  short_description: "Refresh and deploy the ARAM Mayhem tier-list website safely."
+  default_prompt: "Refresh the ARAM Mayhem tier-list site using the project SOP, verify the generated docs/index.html, then stage only the intended files."
