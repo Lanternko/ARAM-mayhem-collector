@@ -86,6 +86,10 @@ Database: `data/lcu/games.db` (SQLite) — safe to interrupt and resume.
 ## Stall Playbook
 
 - `metrics` 若出現 `Mayhem +0`、`current_patch +0`，但 `done_delta` 持續增加，代表 crawler 活著但目前 seed family 已低產值，不要只看 worker 是否存在。
+- Unattended recovery uses `python scripts/mayhem_lcu_watchdog.py --check-interval-sec 60`: keep the configured worker target, restart League only when safe, wait for LCU 200, and relaunch workers only while client memory is below the configured start cap.
+- Current throughput run is 2 workers: `python scripts/mayhem_lcu_watchdog.py --check-interval-sec 60 --workers 2 --degrade-client-mb 5200 --degraded-workers 1 --client-restart-mb 5800 --worker-start-max-client-mb 3500`; it tolerates higher LeagueClient memory, drops to 1 worker at 5.2GB, and restarts League in safe phases at 5.8GB or immediately on LCU failure.
+- Watchdog JSONL recovery actions must include `league_main_mb_at_action` plus thresholds and LCU status so future runs can infer the highest stable LeagueClient memory instead of guessing.
+- Do not launch `LeagueClient.exe` directly; Riot returns `Access is denied`. Correct restart path is Riot Client Electron `--app-port` + `--remoting-auth-token`, then HTTPS POST `/product-launcher/v1/products/league_of_legends/patchlines/live` with basic auth `riot:<token>`.
 - `recent-active reseed` 若能短暫把 queue 打開、但 log 幾乎整排都是 `source=match` + `target_games=0`，代表目前 active subgraph 已吃乾，應換 seed family 而不是重複 recent-active。
 - `seed-opgg-plan --resume` 只有在 `data/seeds/opgg_tw_state.json` 與 `data/seeds/opgg_tw_history.jsonl` 都前進時，才算成功 refresh；若 `manual_riot_id seed progress` 反覆出現 `resolved=0 / enqueued=0`，視為目前 OPGG page window 已耗盡。
 - `apex` / `ladder` / `riot_tier` 是 TW Mayhem 上**已驗證的 dead seed family**（2026-05-15 量測：合計 2,890 done puuids、0 transitive captures）；`snowball` 別再花 LCU bandwidth 跑這幾個 root，除非換 region 或大版本後再重驗。用 `python scripts/lcu_collector.py family-stats --queue 2400` 隨時看當前 per-family ROI。
