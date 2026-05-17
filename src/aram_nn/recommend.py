@@ -1,34 +1,36 @@
-"""Real-time ARAM champion recommendation from a trained LR model.
+"""Real-time ARAM champion recommendation from LR + pair synergy stats.
 
 Why LR and not DeepSets:
   At current data scale (~18k games, 2 patches) the LR baseline outperforms
   the DeepSets NN on classification (test acc 55.86% vs 52.72%, see
-  models/tier2_mayhem/summary.json).  LR is also analytically convenient
-  here — see "opponent-invariant ranking" below.
+  models/tier2_mayhem/summary.json).  LR remains useful as a universal
+  champion-strength prior, but same-team pair stats now dominate ranking.
 
-Why opponent visibility doesn't matter for ranking:
+Why opponent visibility doesn't matter for the LR component:
   ARAM champ select hides the opposing team's champions.  But the LR encoding
   is logit = Σ_{c∈blue} w_c − Σ_{c∈red} w_c + b, so swapping my own pick
   Y → X changes the logit by exactly (w_X − w_Y).  The unknown red-team
-  contribution cancels out entirely.  The ranking of candidates is therefore
-  EXACT even with the opponent hidden — only the displayed absolute prob
-  needs an opponent prior.
+  contribution cancels out entirely.  Pair synergy is computed only from the
+  visible ally anchors, so it also does not require opponent visibility.
 
 Absolute probability assumes "average opponent":
   We set the red-team contribution to 0 in the feature vector.  Since LR was
   trained with +1/-1 encoding and L2 regularization, mean coefficient ≈ 0,
   so this is a reasonable point estimate (not a posterior).  The number is
-  decorative — the deltas are the load-bearing output.
+  decorative; the blended score is the load-bearing output.
 """
 from __future__ import annotations
 
 import json
+import math
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+
+from aram_nn.pair_synergy import PairSynergyStats
 
 
 @dataclass
@@ -218,11 +220,56 @@ class Suggestion:
     champion_id: int
     source: str            # "keep" or "bench"
     win_prob: float        # absolute P(blue wins) under "average opponent"
-    delta: float           # win_prob - baseline (positive = better than keeping current)
+    delta: float           # legacy display alias for score
+    prob_delta_lr: float   # LR win_prob - baseline
+    synergy_delta: float   # candidate anchor synergy minus current anchor synergy
+    synergy_se: float      # combined SE for the synergy estimate
+    anchors_covered: int   # number of teammate anchors with usable pair stats
+    score: float           # 70% synergy + 30% LR prob delta
     z_score: float         # standardized champion strength in the current meta:
                            #   (coef[champ] - mean(coef)) / std(coef)
                            # ~ +1 means roughly top 16%, ~ +2 means top 2.5%.
     is_known: bool         # False if championId is outside training vocab
+
+
+def _combine_synergy(
+    anchors: Iterable[int],
+    candidate_id: int,
+    pair_stats: PairSynergyStats | None,
+) -> tuple[float, float, int]:
+    """Return (synergy_delta, combined_se, anchors_covered)."""
+    if pair_stats is None:
+        return 0.0, float("inf"), 0
+
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    se_sq_sum = 0.0
+    deltas: list[float] = []
+
+    for anchor in anchors:
+        row = pair_stats.get(anchor, candidate_id)
+        if row is None:
+            continue
+        weight = 1.0 / (row.se * row.se + 0.0004)
+        weighted_sum += row.delta * weight
+        weight_sum += weight
+        se_sq_sum += row.se * row.se
+        deltas.append(row.delta)
+
+    anchors_covered = len(deltas)
+    if anchors_covered == 0:
+        return 0.0, float("inf"), 0
+
+    combined_se = math.sqrt(se_sq_sum) / anchors_covered
+    if anchors_covered >= 2:
+        synergy = weighted_sum / weight_sum if weight_sum > 0 else float(np.mean(deltas))
+    else:
+        synergy = 0.5 * deltas[0]
+
+    if combined_se > 0.04:
+        synergy *= 0.5
+
+    return float(synergy), float(combined_se), anchors_covered
 
 
 def suggest_for_cell(
@@ -230,11 +277,13 @@ def suggest_for_cell(
     my_current_id: int,
     bench_ids: list[int],
     model: LRModel,
+    pair_stats: PairSynergyStats | None = None,
 ) -> list[Suggestion]:
     """Rank candidates for the local player's cell.
 
     Candidates = {my_current} ∪ bench.  For each, swap that champion into the
-    local cell, recompute P(blue wins), and sort by descending delta.
+    local cell, compute ally-anchor synergy, blend it with the LR probability
+    delta, and sort by descending score.
 
     Args:
       my_team_ids : list of 5 championIds currently locked into the blue team
@@ -249,6 +298,8 @@ def suggest_for_cell(
         )
 
     baseline = predict_blue_prob(my_team_ids, model)
+    anchors = [int(c) for c in my_team_ids if int(c) != int(my_current_id)]
+    current_synergy, _, _ = _combine_synergy(anchors, int(my_current_id), pair_stats)
 
     seen: set[int] = set()
     out: list[Suggestion] = []
@@ -262,19 +313,36 @@ def suggest_for_cell(
             out.append(Suggestion(
                 champion_id=int(cid), source=source,
                 win_prob=float("nan"), delta=float("nan"),
+                prob_delta_lr=float("nan"),
+                synergy_delta=float("nan"), synergy_se=float("nan"),
+                anchors_covered=0, score=float("nan"),
                 z_score=float("nan"), is_known=False,
             ))
             continue
 
         swapped = [c if c != my_current_id else cid for c in my_team_ids]
         prob = predict_blue_prob(swapped, model)
+        prob_delta_lr = prob - baseline
+        candidate_synergy, synergy_se, anchors_covered = _combine_synergy(
+            anchors, int(cid), pair_stats
+        )
+        synergy_delta = (
+            candidate_synergy - current_synergy
+            if anchors_covered > 0 else 0.0
+        )
+        score = 0.7 * synergy_delta + 0.3 * prob_delta_lr
         out.append(Suggestion(
             champion_id=int(cid), source=source,
-            win_prob=prob, delta=prob - baseline,
+            win_prob=prob, delta=score,
+            prob_delta_lr=prob_delta_lr,
+            synergy_delta=synergy_delta,
+            synergy_se=synergy_se,
+            anchors_covered=anchors_covered,
+            score=score,
             z_score=model.z_score(idx), is_known=True,
         ))
 
-    out.sort(key=lambda s: (not s.is_known, -s.delta if s.is_known else 0.0))
+    out.sort(key=lambda s: (not s.is_known, -s.score if s.is_known else 0.0))
     return out
 
 
