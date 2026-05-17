@@ -5,8 +5,8 @@ Riot's Data Dragon CDN, applies Bayesian smoothing, and renders an HTML grid
 where each champion icon carries a tier badge (OP / T1..T5) in the top-right.
 
 Clicking a champion expands an inline panel below its tier-row showing the
-top-5 best and bottom-5 worst augments (by Bayesian-smoothed winrate using
-that champion's own baseline winrate as the prior), plus best/worst same-team
+top-5 best and bottom-5 worst augments (by empirical-Bayes lower-bound lift;
+peer-relative pick-rate is kept as diagnostics), plus best/worst same-team
 teammate synergies.  A right-side panel also lets users pick 1-4 champions and
         rank recommended teammates by aggregated anchor-conditional synergy.
 
@@ -18,17 +18,26 @@ Usage:
 from __future__ import annotations
 
 import datetime as _dt
+import csv
 import html
 from io import BytesIO
 import json
 import math
 import re
 import sqlite3
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import click
 import httpx
+
+try:
+    from scipy.optimize import minimize_scalar
+    from scipy.special import betaln, betaincinv
+except Exception:  # pragma: no cover - scipy is installed through sklearn locally.
+    minimize_scalar = None
+    betaln = None
+    betaincinv = None
 
 
 TIER_ORDER = ["OP", "T1", "T2", "T3", "T4", "T5"]
@@ -56,6 +65,12 @@ TIER_LABEL_BG = {
 }
 
 CDRAGON_BASE = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default"
+AUGMENT_PRIOR_DEFAULT = 350.0
+AUGMENT_POSTERIOR_Q = 0.10
+AUGMENT_LCB_Z = 1.2815515655446004
+AUGMENT_PICK_LIFT_WEIGHT = 0.0
+AUGMENT_PICK_LIFT_CAP = 3.0
+EMPIRICAL_CHAMPION_SCORES = Path("data/cache/champion_scores_empirical_merged.csv")
 
 MAYHEM_AUGMENT_SETS = {
     "Archmage": [
@@ -961,16 +976,263 @@ def compute_winrates(
 RARITY_ORDER = ["kPrismatic", "kGold", "kSilver"]
 
 
+def estimate_augment_prior_strength(champ_aug: list[dict]) -> float:
+    """Estimate beta-binomial prior strength for champ x augment WRs.
+
+    Each pair is centered on that champion's baseline winrate.  The fitted
+    concentration controls how aggressively low-sample pairs shrink back to the
+    champion baseline, and avoids a hand-picked `games / (games + k)` scale.
+    """
+    rows: list[tuple[int, int, float]] = []
+    for row in champ_aug:
+        games = int(row.get("games", 0))
+        wins = int(row.get("wins", 0))
+        baseline = float(row.get("baseline_wr", 0.5))
+        if games <= 0:
+            continue
+        rows.append((wins, games, min(max(baseline, 1e-4), 1.0 - 1e-4)))
+
+    if len(rows) < 20:
+        return AUGMENT_PRIOR_DEFAULT
+
+    if minimize_scalar is not None and betaln is not None:
+        def nll(log_k: float) -> float:
+            k = math.exp(log_k)
+            loss = 0.0
+            for wins, games, baseline in rows:
+                alpha = baseline * k
+                beta = (1.0 - baseline) * k
+                # The combinatorial term is constant in k, so it is omitted.
+                loss -= float(betaln(wins + alpha, games - wins + beta) - betaln(alpha, beta))
+            return loss
+
+        try:
+            result = minimize_scalar(
+                nll,
+                bounds=(math.log(5.0), math.log(5000.0)),
+                method="bounded",
+                options={"xatol": 1e-3},
+            )
+            if result.success:
+                return max(5.0, min(5000.0, math.exp(float(result.x))))
+        except Exception:
+            pass
+
+    # Fallback: moment estimate from over-dispersion beyond binomial noise.
+    rhos: list[float] = []
+    for wins, games, baseline in rows:
+        observed = wins / games
+        denom = max(baseline * (1.0 - baseline), 1e-6)
+        extra_var = max(0.0, (observed - baseline) ** 2 - denom / games)
+        if extra_var > 0:
+            rhos.append(extra_var / denom)
+    if not rhos:
+        return AUGMENT_PRIOR_DEFAULT
+    rhos.sort()
+    rho = rhos[len(rhos) // 2]
+    if rho <= 0:
+        return AUGMENT_PRIOR_DEFAULT
+    return max(5.0, min(5000.0, (1.0 / rho) - 1.0))
+
+
+def beta_posterior_quantile(q: float, alpha: float, beta: float) -> float:
+    if betaincinv is not None:
+        try:
+            return float(betaincinv(alpha, beta, q))
+        except Exception:
+            pass
+    mean = alpha / (alpha + beta)
+    var = alpha * beta / ((alpha + beta) ** 2 * (alpha + beta + 1.0))
+    return min(max(mean - AUGMENT_LCB_Z * math.sqrt(max(var, 0.0)), 0.0), 1.0)
+
+
+def posterior_wr_summary(wins: int, games: int, baseline: float, prior_strength: float) -> tuple[float, float]:
+    baseline = min(max(baseline, 1e-4), 1.0 - 1e-4)
+    alpha = baseline * prior_strength + wins
+    beta = (1.0 - baseline) * prior_strength + games - wins
+    mean = alpha / (alpha + beta)
+    lower = beta_posterior_quantile(AUGMENT_POSTERIOR_Q, alpha, beta)
+    return mean, lower
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _damage_bucket(row: dict[str, str] | None, role: str) -> str:
+    if row:
+        physical = _safe_float(row.get("empirical_physical_damage_ratio"))
+        magic = _safe_float(row.get("empirical_magic_damage_ratio"))
+        if physical >= 0.55 and physical >= magic + 0.15:
+            return "physical"
+        if magic >= 0.55 and magic >= physical + 0.15:
+            return "magic"
+    if role in {"Marksman", "Fighter", "Assassin"}:
+        return "physical"
+    if role in {"Mage", "Support"}:
+        return "magic"
+    return "mixed"
+
+
+def load_champion_pick_profiles(
+    champ_meta: dict[int, dict],
+    scores_path: Path = EMPIRICAL_CHAMPION_SCORES,
+) -> dict[int, dict[str, str]]:
+    score_rows: dict[int, dict[str, str]] = {}
+    if scores_path.exists():
+        with scores_path.open(encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    score_rows[int(row["champion_id"])] = row
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    profiles: dict[int, dict[str, str]] = {}
+    for cid, meta in champ_meta.items():
+        tags = list(meta.get("tags") or [])
+        role = tags[0] if tags else "Unknown"
+        profiles[int(cid)] = {
+            "role": role,
+            "damage": _damage_bucket(score_rows.get(int(cid)), role),
+        }
+    return profiles
+
+
+_DAMAGE_PROFILE_KEYWORDS = (
+    "ability power",
+    "adaptive force",
+    "attack damage",
+    "attack speed",
+    "basic attack",
+    "basic attacks",
+    "critical",
+    "crit",
+    "magic damage",
+    "magic penetration",
+    "on-hit",
+    "physical damage",
+    "armor penetration",
+    "lethality",
+    "spell damage",
+    "true damage",
+    "convert",
+)
+
+
+def augment_peer_scope(meta: dict | None) -> str:
+    if not meta:
+        return "role"
+    text = " ".join(
+        str(meta.get(key) or "")
+        for key in ("name", "name_en", "desc", "desc_en", "set", "set_en")
+    ).lower()
+    if any(keyword in text for keyword in _DAMAGE_PROFILE_KEYWORDS):
+        return "role_damage"
+    return "role"
+
+
+def _profile_group(cid: int, profiles: dict[int, dict[str, str]], scope: str) -> str:
+    profile = profiles.get(cid, {})
+    role = profile.get("role") or "Unknown"
+    if scope == "role_damage":
+        return f"{role}|{profile.get('damage') or 'mixed'}"
+    return role
+
+
+def build_pick_lift_index(
+    champ_aug: list[dict],
+    aug_meta: dict[int, dict],
+    profiles: dict[int, dict[str, str]],
+) -> dict[tuple[int, int], dict[str, float | str]]:
+    champ_rarity_totals: Counter[tuple[int, str]] = Counter()
+    global_totals: Counter[str] = Counter()
+    global_counts: Counter[tuple[str, int]] = Counter()
+    group_totals: Counter[tuple[str, str, str]] = Counter()
+    group_counts: Counter[tuple[str, str, str, int]] = Counter()
+    rarity_aug_ids: dict[str, set[int]] = defaultdict(set)
+
+    for row in champ_aug:
+        aid = int(row["augment_id"])
+        cid = int(row["champion_id"])
+        games = int(row["games"])
+        meta = aug_meta.get(aid)
+        rarity = str(meta.get("rarity") or "") if meta else ""
+        if not rarity:
+            continue
+        rarity_aug_ids[rarity].add(aid)
+        champ_rarity_totals[(cid, rarity)] += games
+        global_totals[rarity] += games
+        global_counts[(rarity, aid)] += games
+        for scope in ("role", "role_damage"):
+            group = _profile_group(cid, profiles, scope)
+            group_totals[(scope, group, rarity)] += games
+            group_counts[(scope, group, rarity, aid)] += games
+
+    out: dict[tuple[int, int], dict[str, float | str]] = {}
+    for row in champ_aug:
+        aid = int(row["augment_id"])
+        cid = int(row["champion_id"])
+        games = int(row["games"])
+        meta = aug_meta.get(aid)
+        rarity = str(meta.get("rarity") or "") if meta else ""
+        if not rarity or global_totals[rarity] <= 0:
+            continue
+        scope = augment_peer_scope(meta)
+        group = _profile_group(cid, profiles, scope)
+        group_key = (scope, group, rarity)
+        champ_total = champ_rarity_totals[(cid, rarity)]
+        peer_total = group_totals[group_key] - champ_total
+        peer_count = group_counts[(scope, group, rarity, aid)] - games
+
+        # If role+damage is too thin after leave-one-out, fall back to role-only
+        # before falling all the way back to the same-rarity global baseline.
+        min_peer_total = max(50.0, 2.0 * len(rarity_aug_ids[rarity]))
+        if scope == "role_damage" and peer_total < min_peer_total:
+            scope = "role"
+            group = _profile_group(cid, profiles, scope)
+            group_key = (scope, group, rarity)
+            peer_total = group_totals[group_key] - champ_total
+            peer_count = group_counts[(scope, group, rarity, aid)] - games
+
+        m = max(1, len(rarity_aug_ids[rarity]))
+        global_rate = (global_counts[(rarity, aid)] + 0.5) / (global_totals[rarity] + 0.5 * m)
+        if peer_total > 0:
+            peer_rate = (peer_count + 0.5 * m * global_rate) / (peer_total + 0.5 * m)
+        else:
+            peer_rate = global_rate
+            group = "global"
+        champ_rate = (games + 0.5 * m * peer_rate) / (champ_total + 0.5 * m) if champ_total > 0 else peer_rate
+        pick_lift = math.log(max(champ_rate, 1e-9) / max(peer_rate, 1e-9))
+        out[(cid, aid)] = {
+            "pick_rate": champ_rate,
+            "peer_pick_rate": peer_rate,
+            "pick_lift": pick_lift,
+            "peer_scope": scope,
+            "peer_group": group,
+        }
+    return out
+
+
 def build_champ_augment_picks(
     champ_aug: list[dict],
     aug_meta: dict[int, dict],
+    profiles: dict[int, dict[str, str]],
     *,
     min_games_per_pair: int,
     top_n: int,
     bot_n: int,
+    prior_strength: float,
 ) -> dict[int, dict]:
-    """For each champion, pick top-N best and bot-N worst augments by smoothed WR,
-    bucketed by rarity (Prismatic / Gold / Silver)."""
+    """For each champion, pick top-N best and bot-N worst augments by fit score.
+
+    Displayed WR remains the posterior mean.  Ranking uses a conservative
+    posterior lower-bound lift.  Peer-relative pick-rate is packed for
+    diagnostics and future labeling, but does not rewrite WR.
+    """
+    pick_lift_index = build_pick_lift_index(champ_aug, aug_meta, profiles)
     by_champ_rarity: dict[int, dict[str, list[dict]]] = {}
     for row in champ_aug:
         if row["games"] < min_games_per_pair:
@@ -984,15 +1246,40 @@ def build_champ_augment_picks(
         bucket = by_champ_rarity.setdefault(
             row["champion_id"], {r: [] for r in RARITY_ORDER}
         )
-        bucket[rarity].append(row)
+        games = int(row["games"])
+        wins = int(row["wins"])
+        baseline = float(row.get("baseline_wr", 0.5))
+        mean_wr, lower_wr = posterior_wr_summary(wins, games, baseline, prior_strength)
+        pick_info = pick_lift_index.get((int(row["champion_id"]), int(row["augment_id"])), {})
+        pick_lift = float(pick_info.get("pick_lift", 0.0))
+        clamped_pick_lift = max(-AUGMENT_PICK_LIFT_CAP, min(AUGMENT_PICK_LIFT_CAP, pick_lift))
+        ranked = {
+            **row,
+            "raw_wr": wins / games if games else baseline,
+            "smoothed_wr": mean_wr,
+            "lcb_wr": lower_wr,
+            "baseline_wr": baseline,
+            "lift": mean_wr - baseline,
+            "lcb_lift": lower_wr - baseline,
+            "rank_score": (lower_wr - baseline) + AUGMENT_PICK_LIFT_WEIGHT * clamped_pick_lift,
+            "pick_rate": float(pick_info.get("pick_rate", 0.0)),
+            "peer_pick_rate": float(pick_info.get("peer_pick_rate", 0.0)),
+            "pick_lift": pick_lift,
+            "peer_scope": str(pick_info.get("peer_scope", "")),
+            "peer_group": str(pick_info.get("peer_group", "")),
+        }
+        bucket[rarity].append(ranked)
 
     out: dict[int, dict] = {}
     for cid, buckets in by_champ_rarity.items():
         top, bot = {}, {}
         for rarity, rows in buckets.items():
-            rows.sort(key=lambda r: -r["smoothed_wr"])
+            rows.sort(key=lambda r: (-r["rank_score"], -r["lcb_lift"], -r["games"], r["augment_id"]))
             top[rarity] = rows[:top_n]
-            bot[rarity] = rows[-bot_n:][::-1] if rows else []
+            bot[rarity] = sorted(
+                rows,
+                key=lambda r: (r["rank_score"], r["lcb_lift"], r["games"], r["augment_id"]),
+            )[:bot_n]
         out[cid] = {"top": top, "bot": bot}
     return out
 
@@ -1299,6 +1586,11 @@ def render_html(
             "g": r["games"],
             "wr": round(r["smoothed_wr"], 4),
             "lift": round(r["lift"], 4),
+            "score": round(r.get("rank_score", r["lift"]), 4),
+            "lcb": round(r.get("lcb_lift", r["lift"]), 4),
+            "pick": round(r.get("pick_rate", 0.0), 4),
+            "peerPick": round(r.get("peer_pick_rate", 0.0), 4),
+            "pickLift": round(r.get("pick_lift", 0.0), 3),
         }
 
     def _pack_set(r: dict) -> dict:
@@ -3817,12 +4109,20 @@ def main(
     click.echo(f"[tierlist] {len(champ_aug):,} (champ, augment) pairs total")
     click.echo(f"[tierlist] {len(champ_pairs):,} ordered same-team champion pairs total")
 
+    aug_prior_strength = estimate_augment_prior_strength(champ_aug)
+    click.echo(
+        f"[tierlist] augment EB prior strength k={aug_prior_strength:.1f} "
+        f"(posterior q={AUGMENT_POSTERIOR_Q:.2f}, pick_weight={AUGMENT_PICK_LIFT_WEIGHT:g})"
+    )
+    champ_profiles = load_champion_pick_profiles(champ_meta)
     picks = build_champ_augment_picks(
         champ_aug,
         aug_meta,
+        champ_profiles,
         min_games_per_pair=min_pair_games,
         top_n=top_n,
         bot_n=bot_n,
+        prior_strength=aug_prior_strength,
     )
     click.echo(
         f"[tierlist] {len(picks)} champions have >= 1 rarity-bucketed pair "
