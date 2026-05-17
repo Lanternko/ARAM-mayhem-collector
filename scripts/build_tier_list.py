@@ -2364,7 +2364,6 @@ def render_html(
             align-items: flex-start;
             gap: 4px;
         }
-        .detail-title-row { width: 100%; }
         .aug-set-summary {
             max-width: 100%;
             white-space: normal;
@@ -2376,6 +2375,7 @@ def render_html(
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
         .detail-cols.pair-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
         .detail-cols.pair-cols .detail-col h3 { margin-bottom: 6px; font-size: 12px; }
+        .detail-cols.pair-cols .detail-col-heading h3 { margin-bottom: 0; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
            space.  Each augment card still has a rarity-coloured border, so
            which row is which is obvious. */

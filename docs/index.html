@@ -652,13 +652,6 @@
         font-weight: 600;
         letter-spacing: 0.3px;
     }
-    .detail-title-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-        flex-wrap: wrap;
-    }
     .section-meta {
         color: #9aa0a6;
         font-size: 11px;
@@ -681,12 +674,10 @@
         text-overflow: ellipsis;
         cursor: help;
     }
-    .aug-set-summary .sum-label {
-        color: #6bd16b;
-        font-weight: 700;
-    }
-    .aug-set-summary .sum-label.bad {
-        color: #ff7d7d;
+    .aug-set-summary.bad {
+        background: rgba(255, 125, 125, 0.09);
+        border-color: rgba(255, 125, 125, 0.24);
+        color: #ffd1d1;
     }
     .aug-set-summary .sum-item {
         overflow: hidden;
@@ -703,6 +694,15 @@
         font-weight: 600;
         letter-spacing: 0.3px;
     }
+    .detail-col-heading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+    .detail-col-heading h3 { margin: 0; }
     .detail-col.best h3 { color: #6bd16b; }
     .detail-col.worst h3 { color: #ff6b6b; }
     .rarity-row {
@@ -1019,7 +1019,6 @@
             align-items: flex-start;
             gap: 4px;
         }
-        .detail-title-row { width: 100%; }
         .aug-set-summary {
             max-width: 100%;
             white-space: normal;
@@ -1031,6 +1030,7 @@
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
         .detail-cols.pair-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
         .detail-cols.pair-cols .detail-col h3 { margin-bottom: 6px; font-size: 12px; }
+        .detail-cols.pair-cols .detail-col-heading h3 { margin-bottom: 0; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
            space.  Each augment card still has a rarity-coloured border, so
            which row is which is obvious. */
@@ -1369,29 +1369,18 @@
             if (!items.length) return `<div class="mate-list empty-list">${copy.insufficient}</div>`;
             return `<div class="mate-list">${items.map(entry => buildMateCard(entry, kind)).join('')}</div>`;
         };
-        const buildSetSummary = () => {
-            const bestSets = setTop.filter(entry => entry.res >= SET_RESIDUAL_THRESHOLD).slice(0, 3);
-            const worstSets = setBot.filter(entry => entry.res <= -SET_RESIDUAL_THRESHOLD).slice(0, 3);
-            if (!bestSets.length && !worstSets.length) return '';
-            const bestLabel = currentLang === 'en' ? 'Best' : '最佳';
-            const worstLabel = currentLang === 'en' ? 'Worst' : '最差';
-            const detailLine = (label, rows) => rows.length
-                ? `${label}: ` + rows.map(entry => {
-                    const name = setEntryName(entry);
-                    return `${name} residual ${signed(entry.res)}, lift ${signed(entry.lift)}, set avg ${signed(entry.avg)}, WR ${pct(entry.wr)}, ${entry.g} games`;
-                }).join(' | ')
-                : '';
-            const titleAttr = [detailLine(bestLabel, bestSets), detailLine(worstLabel, worstSets)]
-                .filter(Boolean)
-                .join('\n');
-            const renderGroup = (label, rows, bad = false) => rows.length ? `
-                <span class="sum-label ${bad ? 'bad' : ''}">${label}</span>
-                ${rows.map(entry => `<span class="sum-item">${escHtml(setEntryName(entry))}</span>`).join('')}
-            ` : '';
+        const buildSetSummary = (rows, bad = false) => {
+            const visibleSets = rows
+                .filter(entry => bad ? entry.res <= -SET_RESIDUAL_THRESHOLD : entry.res >= SET_RESIDUAL_THRESHOLD)
+                .slice(0, 3);
+            if (!visibleSets.length) return '';
+            const titleAttr = visibleSets.map(entry => {
+                const name = setEntryName(entry);
+                return `${name} residual ${signed(entry.res)}, lift ${signed(entry.lift)}, set avg ${signed(entry.avg)}, WR ${pct(entry.wr)}, ${entry.g} games`;
+            }).join('\n');
             return `
-                <div class="aug-set-summary" title="${escHtml(titleAttr)}">
-                    ${renderGroup(bestLabel, bestSets)}
-                    ${renderGroup(worstLabel, worstSets, true)}
+                <div class="aug-set-summary ${bad ? 'bad' : ''}" title="${escHtml(titleAttr)}">
+                    ${visibleSets.map(entry => `<span class="sum-item">${escHtml(setEntryName(entry))}</span>`).join('')}
                 </div>
             `;
         };
@@ -1402,19 +1391,22 @@
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
-                    <div class="detail-title-row">
-                        <h3>${copy.detailSectionTitle}</h3>
-                        ${buildSetSummary()}
-                    </div>
+                    <h3>${copy.detailSectionTitle}</h3>
                     <span class="section-meta">${copy.augSectionMeta}</span>
                 </div>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
-                        <h3>${copy.best}</h3>
+                        <div class="detail-col-heading">
+                            <h3>${copy.best}</h3>
+                            ${buildSetSummary(setTop)}
+                        </div>
                         ${topRows}
                     </div>
                     <div class="detail-col worst">
-                        <h3>${copy.worst}</h3>
+                        <div class="detail-col-heading">
+                            <h3>${copy.worst}</h3>
+                            ${buildSetSummary(setBot, true)}
+                        </div>
                         ${botRows}
                     </div>
                 </div>
