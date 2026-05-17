@@ -858,10 +858,15 @@
     .aug.rarity-kPrismatic { box-shadow: inset 0 0 0 2px #d36bff; }
     .mate-list {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
     }
-    .mate-list.empty-list { color: #6b7280; font-size: 11px; padding: 8px 0; }
+    .mate-list.empty-list {
+        display: block;
+        color: #6b7280;
+        font-size: 11px;
+        padding: 8px 0;
+    }
     .mate-card {
         display: grid;
         grid-template-columns: 42px 1fr;
@@ -872,6 +877,7 @@
         border-radius: 8px;
         border: 1px solid rgba(255,255,255,0.04);
     }
+    .mate-card > div { min-width: 0; }
     .mate-card img {
         width: 42px;
         height: 42px;
@@ -1189,7 +1195,7 @@
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
             closeDetail: '關閉英雄詳細資訊',
             detailEmpty: '這個英雄目前沒有可顯示的資料。',
-            detailMeta: 'Augment 適配與同隊搭檔排名',
+            detailMeta: '增幅裝置勝率 + 和推薦隊友',
             augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
@@ -1203,7 +1209,7 @@
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
             expected: value => ` · 預期 ${value}`,
-            detailSectionTitle: 'Augment',
+            detailSectionTitle: '增幅裝置',
             recRowTitle: (name, fit, liftAvg) => `${name} · 排序分 ${fit} · 平均 residual ${liftAvg}`,
             recRowMeta: (fit, liftAvg, zAvg, minGames, coverage) => `排序 ${fit} · ${liftAvg} residual · z <span class="z">${zAvg}</span> · min ${minGames}場（${coverage}）`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
@@ -1240,7 +1246,7 @@
             panelNoData: 'This combination does not have enough pair data yet.',
             closeDetail: 'Close champion details',
             detailEmpty: 'No detail data is available for this champion yet.',
-            detailMeta: 'Augment fit and same-team pairing rankings',
+            detailMeta: 'Recommend Augments + Best Team Comp',
             augSectionMeta: 'Best / worst 5 from each rarity',
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
@@ -1341,6 +1347,7 @@
         { key: 'kGold',      css: 'gold' },
         { key: 'kSilver',    css: 'silver' },
     ];
+    const MATE_LIST_LIMIT = 8;
 
     function buildRarityRow(items, kind, r) {
         const copy = tr();
@@ -1367,8 +1374,8 @@
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
         const botRows = RARITIES.map(r => buildRarityRow(bot[r.key], 'bad', r)).join('');
         const pairs = info.pairs || [];
-        const mateTop = pairs.slice(0, 5);
-        const mateBot = [...pairs].slice(-5).reverse();
+        const mateTop = pairs.slice(0, MATE_LIST_LIMIT);
+        const mateBot = [...pairs].slice(-MATE_LIST_LIMIT).reverse();
         const buildMateCard = (entry, kind) => {
             const mate = DATA.champs[String(entry.id)];
             const name = mate ? champName(mate) : ('#' + entry.id);
