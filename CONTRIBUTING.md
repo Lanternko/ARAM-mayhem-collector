@@ -32,9 +32,10 @@ python -m pip install -e .
 不需要在玩，客戶端登入在線即可（collector 透過本機 LCU API 抓你 + 最近對手的對戰）。
 
 ### 2. 跑 collector 一段時間
-最簡單一行（PowerShell 整段貼成一行）：
+最簡單流程（PowerShell 依序貼上兩行）：
 ```powershell
-python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold
+python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
+python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 ```
 跑越久收越多。中斷再跑會自動續傳（SQLite + crawl frontier 都是持久化的）。
 

@@ -53,10 +53,11 @@ python -m pip install -e .   # 需要 Python 3.13+
 
 **步驟 1 — 跑 collector**
 
-打開 League 客戶端（**不需要在玩**，登入在線即可），再開一個 PowerShell 視窗整段貼一行：
+打開 League 客戶端（**不需要在玩**，登入在線即可），再開一個 PowerShell 視窗依序貼上兩行：
 
 ```powershell
-python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold
+python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
+python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 ```
 
 跑越久收越多場。任何時候 `Ctrl+C` 中斷都可以，下次再跑會從上次的進度續傳。想看現在累積到幾場：

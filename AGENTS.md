@@ -57,7 +57,6 @@ python scripts/lcu_collector.py status           # see how many games captured
 python scripts/lcu_collector.py metrics          # record growth / speed / seed-efficiency snapshots
 
 # Default TW Mayhem path: OPGG/manual Riot ID seeding.  See Stall Playbook before using ladder/apex/riot-tier.
-python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
 python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier diamond --tier emerald --tier platinum --tier gold --pages-per-tier 80 --topn-total 0 --out data/seeds/opgg_tw.txt

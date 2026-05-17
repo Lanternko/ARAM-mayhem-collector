@@ -62,7 +62,6 @@ python scripts/lcu_collector.py status           # see how many games captured
 python scripts/lcu_collector.py metrics          # record growth / speed / seed-efficiency snapshots
 
 # Default TW Mayhem path: OPGG/manual Riot ID seeding.  See Stall Playbook before using ladder/apex/riot-tier.
-python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier platinum --tier gold --pages-per-tier 2 --out data/seeds/opgg_tw.txt
 python scripts/lcu_collector.py snowball --seed-riot-id-file data/seeds/opgg_tw.txt --target-games 500 --max-players 1000 --games-per-player 4
 python scripts/lcu_collector.py seed-opgg-plan --region tw --tier diamond --tier emerald --tier platinum --tier gold --pages-per-tier 80 --topn-total 0 --out data/seeds/opgg_tw.txt
@@ -98,7 +97,7 @@ Database: `data/lcu/games.db` (SQLite) — safe to interrupt and resume.
 - `manual_riot_id`（OPGG）**是** productive seed family — 同一次量測 199 captures / 2,385 puuids、blue_wr=0.528。**舊** log 看到的「manual yield=0」其實是 attribution bug（transitive captures 被歸到 immediate `match` source 而非 root family），已於 `crawl_seen.seed_family` 修；別根據舊結論判 OPGG seed 沒用。
 - `suggested players` 是下一個高價值 seed family，但只在 `gameflow phase=Lobby` 時存在；若 phase=`None` 且 `suggested_players=0`，下一個最有價值的 move 是使用者先進 lobby。
 - LCU 所謂「憑證過期」通常不是 cert 真過期，而是 League 重啟後 `port/token` 換掉或 `/lol-*` 尚未 ready；先重抓 credentials 與 `current_summoner`，不要先怪 cert。
-- **Persisted backoff 會卡 OPGG seeding**：`source_family_backoff_until` 寫進 `crawl_runtime_state` 後，下一個 snowball 啟動時讀回，會印 `[snowball] startup skip  source=manual_riot_id  reason=backoff` 並讓整批 OPGG seed 不入 queue（newly_seeded=0）。先 `DELETE FROM crawl_runtime_state WHERE state_key LIKE 'backoff:%'` 再啟動，或用 `auto-collect`（每 round 自動清）。
+- **Persisted backoff 會卡 OPGG seeding**：`source_family_backoff_until` 寫進 `crawl_runtime_state` 後，下一個 snowball 啟動時讀回，會印 `[snowball] startup skip  source=manual_riot_id  reason=backoff` 並讓整批 OPGG seed 不入 queue（newly_seeded=0）。先 `DELETE FROM crawl_runtime_state WHERE state_key LIKE 'backoff:%'` 再啟動。
 - **`source-family backoff` 出現 ≠ run 沒在生產**：backoff 只擋 fresh seeding，已在 queue 裡的 match-source 子節點繼續處理，rate 可能還是 ~30+/min。判 round 死活以 throughput 為準，不要看到 backoff 就 abort。
 
 ## NEVER
