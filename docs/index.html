@@ -644,6 +644,22 @@
         gap: 10px;
         margin-bottom: 12px;
     }
+    .detail-avatar {
+        display: none;
+        width: 42px;
+        height: 42px;
+        border-radius: 9px;
+        border: 1px solid rgba(255,255,255,0.18);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.28);
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+    .detail-title-copy {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+    }
     .detail-head .cname { font-size: 16px; font-weight: 600; }
     .detail-head .cmeta { font-size: 12px; color: #9aa0a6; }
     .detail-section + .detail-section {
@@ -1017,9 +1033,15 @@
            packs 7-8 in and makes icons tiny). */
         .tier-grid { grid-template-columns: repeat(6, 1fr); gap: 5px; }
         .detail-head {
+            align-items: center;
+            gap: 10px;
+            padding-right: 42px;
+        }
+        .detail-avatar { display: block; }
+        .detail-title-copy {
             flex-direction: column;
             align-items: flex-start;
-            gap: 4px;
+            gap: 3px;
         }
         .detail-head .cmeta {
             font-size: 11px;
@@ -1047,15 +1069,15 @@
         .aug-list { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
         .mate-list { grid-template-columns: 1fr; gap: 6px; }
         .mate-card {
-            grid-template-columns: 36px 1fr;
-            gap: 6px;
-            padding: 6px;
+            grid-template-columns: 34px 1fr;
+            gap: 5px;
+            padding: 5px;
             min-width: 0;
         }
         .mate-card > div { min-width: 0; }
         .mate-card img {
-            width: 36px;
-            height: 36px;
+            width: 34px;
+            height: 34px;
             border-radius: 6px;
         }
         .mate-card .mname { font-size: 11px; }
@@ -1087,8 +1109,11 @@
         .gh-star-mobile-label { display: inline; }
         .lang-toggle { min-width: 0; }
     }
-    @media (min-width: 380px) and (max-width: 700px) {
+    @media (min-width: 320px) and (max-width: 359px) {
         .mate-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 360px) and (max-width: 700px) {
+        .mate-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     /* Keyboard a11y: every interactive element gets a visible focus ring
        when focused via keyboard (not mouse click).  Uses the tier accent
@@ -1164,7 +1189,7 @@
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
             closeDetail: '關閉英雄詳細資訊',
             detailEmpty: '這個英雄目前沒有可顯示的資料。',
-            detailMeta: '左邊看 augment，下面看同隊兩兩搭檔',
+            detailMeta: 'Augment 適配與同隊搭檔排名',
             augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
@@ -1215,7 +1240,7 @@
             panelNoData: 'This combination does not have enough pair data yet.',
             closeDetail: 'Close champion details',
             detailEmpty: 'No detail data is available for this champion yet.',
-            detailMeta: 'Augments on the left, same-team pairings below',
+            detailMeta: 'Augment fit and same-team pairing rankings',
             augSectionMeta: 'Best / worst 5 from each rarity',
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
@@ -1367,11 +1392,17 @@
             return `<div class="mate-list">${items.map(entry => buildMateCard(entry, kind)).join('')}</div>`;
         };
         const detailTitleId = `detail-title-${cid}`;
+        const avatarHtml = info.image
+            ? `<img class="detail-avatar" src="${escHtml(info.image)}" alt="" loading="lazy">`
+            : '';
         return `
             <button class="detail-close" type="button" aria-label="${escHtml(copy.closeDetail)}">×</button>
             <div class="detail-head">
-                <span class="cname" id="${detailTitleId}">${champName(info)}</span>
-                <span class="cmeta">${copy.detailMeta}</span>
+                ${avatarHtml}
+                <div class="detail-title-copy">
+                    <span class="cname" id="${detailTitleId}">${champName(info)}</span>
+                    <span class="cmeta">${copy.detailMeta}</span>
+                </div>
             </div>
             <div class="detail-section">
                 <div class="detail-section-head">
