@@ -74,7 +74,6 @@ python scripts/lcu_collector.py merge-db --out-db data/lcu/games_merged.db data/
 python scripts/lcu_collector.py dataset --queue 2400 --patch-prefix 16.9 --topn 20 --min-games 30
 python scripts/lcu_collector.py stats --queue 2400 --patch-prefix 16.9 --out-dir data/stats/mayhem_16_9
 python scripts/lcu_collector.py family-stats --queue 2400
-python scripts/lcu_collector.py auto-collect --rounds 20 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold --opgg-pages-per-round 2
 python scripts/lcu_collector.py export --out data/raw/lcu_games.parquet
 python scripts/lcu_collector.py export --queue 2400 --out data/raw/mayhem_games.parquet
 ```
@@ -100,7 +99,7 @@ Database: `data/lcu/games.db` (SQLite) — safe to interrupt and resume.
 - `manual_riot_id`（OPGG）**是** productive seed family — 同一次量測 199 captures / 2,385 puuids、blue_wr=0.528。**舊** log 看到的「manual yield=0」其實是 attribution bug（transitive captures 被歸到 immediate `match` source 而非 root family），已於 `crawl_seen.seed_family` 修；別根據舊結論判 OPGG seed 沒用。
 - `suggested players` 是下一個高價值 seed family，但只在 `gameflow phase=Lobby` 時存在；若 phase=`None` 且 `suggested_players=0`，下一個最有價值的 move 是使用者先進 lobby。
 - LCU 所謂「憑證過期」通常不是 cert 真過期，而是 League 重啟後 `port/token` 換掉或 `/lol-*` 尚未 ready；先重抓 credentials 與 `current_summoner`，不要先怪 cert。
-- **Persisted backoff 會卡 OPGG seeding**：`source_family_backoff_until` 寫進 `crawl_runtime_state` 後，下一個 snowball 啟動時讀回，會印 `[snowball] startup skip  source=manual_riot_id  reason=backoff` 並讓整批 OPGG seed 不入 queue（newly_seeded=0）。先 `DELETE FROM crawl_runtime_state WHERE state_key LIKE 'backoff:%'` 再啟動，或用 `auto-collect`（每 round 自動清）。
+- **Persisted backoff 會卡 OPGG seeding**：`source_family_backoff_until` 寫進 `crawl_runtime_state` 後，下一個 snowball 啟動時讀回，會印 `[snowball] startup skip  source=manual_riot_id  reason=backoff` 並讓整批 OPGG seed 不入 queue（newly_seeded=0）。先 `DELETE FROM crawl_runtime_state WHERE state_key LIKE 'backoff:%'` 再啟動。
 - **`source-family backoff` 出現 ≠ run 沒在生產**：backoff 只擋 fresh seeding，已在 queue 裡的 match-source 子節點繼續處理，rate 可能還是 ~30+/min。判 round 死活以 throughput 為準，不要看到 backoff 就 abort。
 
 ## NEVER

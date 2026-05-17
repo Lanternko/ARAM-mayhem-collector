@@ -1622,8 +1622,8 @@ def export_share(
             f"  current dir: {cwd_abs}\n\n"
             "Most likely cause: you haven't collected any games yet.\n"
             "Run this first (with League client open in the background):\n\n"
-            "  python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 "
-            "--max-players 1000 --opgg-tier platinum --opgg-tier gold\n\n"
+            "  python scripts/lcu_collector.py snowball --target-games 500 "
+            "--max-players 1000 --games-per-player 4 --seed-ladder --seed-apex\n\n"
             "Then re-run export-share. Or, if your DB lives elsewhere, pass --db <path-to-games.db>."
         )
 

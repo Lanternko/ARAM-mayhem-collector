@@ -34,7 +34,7 @@ python -m pip install -e .
 ### 2. 跑 collector 一段時間
 最簡單一行（PowerShell 整段貼成一行）：
 ```powershell
-python scripts/lcu_collector.py auto-collect --rounds 50 --target-games 500 --max-players 1000 --opgg-tier platinum --opgg-tier gold
+python scripts/lcu_collector.py snowball --target-games 500 --max-players 1000 --games-per-player 4 --seed-ladder --seed-apex
 ```
 跑越久收越多。中斷再跑會自動續傳（SQLite + crawl frontier 都是持久化的）。
 
