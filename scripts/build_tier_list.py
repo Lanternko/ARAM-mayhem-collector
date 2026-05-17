@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import datetime as _dt
+from io import BytesIO
 import json
 import math
 import re
@@ -102,61 +103,67 @@ def write_og_image(
     from PIL import Image, ImageDraw
 
     title, _queue_label = _queue_copy(queue_id)
-    patch_label = f"patch {patch_prefix}.*" if patch_prefix else "all patches"
+    patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
+    top_record = records[0] if records else None
+    top_meta = champ_meta.get(top_record["champion_id"]) if top_record else None
+    top_wr = float(top_record.get("bayes_wr", 0.0)) if top_record else 0.0
 
     img = Image.new("RGB", (1200, 630), "#0f1117")
     draw = ImageDraw.Draw(img)
     title_font = _load_font(74, bold=True)
-    body_font = _load_font(34)
+    body_font = _load_font(40)
     meta_font = _load_font(28, bold=True)
-    small_font = _load_font(22)
+    small_font = _load_font(24, bold=True)
 
     # Layered blocks keep the preview readable in small chat cards.
     draw.rectangle((0, 0, 1200, 630), fill="#0f1117")
-    draw.rectangle((0, 0, 1200, 112), fill="#141824")
+    draw.rectangle((0, 0, 1200, 118), fill="#141824")
     draw.rectangle((0, 562, 1200, 630), fill="#151923")
     draw.rounded_rectangle((64, 150, 1136, 494), radius=28, fill="#191d28", outline="#2b3240", width=2)
-    draw.line((64, 112, 1136, 112), fill="#57a6ff", width=4)
+    draw.line((64, 118, 1136, 118), fill="#57a6ff", width=4)
 
     draw.text((72, 42), "ARAM Mayhem Database", font=meta_font, fill="#65b2ff")
-    draw.text((72, 188), title, font=title_font, fill="#f4f7ff")
-    _draw_text_fit(
-        draw,
-        (76, 290),
-        f"{patch_label} · {total_games:,} 場 LCU 樣本",
-        body_font,
-        "#d6d8de",
-        820,
-    )
-    _draw_text_fit(
-        draw,
-        (76, 346),
-        "英雄勝率、augment、同隊搭檔與組隊推薦",
-        body_font,
-        "#b7beca",
-        820,
-    )
+    draw.text((76, 202), patch_label, font=title_font, fill="#f4f7ff")
+    draw.text((80, 314), "英雄 x 海克斯勝率、搭檔與組隊推薦", font=body_font, fill="#d6d8de")
+    draw.text((80, 382), f"{total_games:,} 場 LCU 樣本", font=meta_font, fill="#8f98aa")
     draw.text((76, 580), "lanternko.github.io/ARAM-Mayhem-Database", font=small_font, fill="#8f98aa")
 
-    icon_records = [r for r in records[:5] if champ_meta.get(r["champion_id"])]
-    x0 = 782
-    swatches = ["#8ec5ff", "#d8b8ff", "#f5c518", "#74d99f", "#ff8c6a"]
-    for i, rec in enumerate(icon_records):
-        meta = champ_meta[rec["champion_id"]]
-        x = x0 + (i % 3) * 112
-        y = 182 + (i // 3) * 126
+    card_x, card_y, card_size = 840, 174, 260
+    draw.rounded_rectangle(
+        (card_x - 12, card_y - 12, card_x + card_size + 12, card_y + card_size + 12),
+        radius=34,
+        fill="#080a10",
+        outline="#f4b7d8",
+        width=7,
+    )
+    draw.rounded_rectangle(
+        (card_x - 4, card_y - 4, card_x + card_size + 4, card_y + card_size + 4),
+        radius=26,
+        outline="#b7d4ff",
+        width=4,
+    )
+    if top_meta and top_meta.get("image"):
+        try:
+            resp = httpx.get(top_meta["image"], timeout=5)
+            resp.raise_for_status()
+            icon = Image.open(BytesIO(resp.content)).convert("RGB").resize((card_size, card_size))
+            mask = Image.new("L", (card_size, card_size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle((0, 0, card_size, card_size), radius=24, fill=255)
+            img.paste(icon, (card_x, card_y), mask)
+        except Exception:
+            draw.rounded_rectangle((card_x, card_y, card_x + card_size, card_y + card_size), radius=24, fill="#242b3a")
+    else:
         draw.rounded_rectangle(
-            (x - 6, y - 6, x + 98, y + 98),
-            radius=18,
-            fill="#0c0f15",
-            outline="#394457",
-            width=2,
+            (card_x, card_y, card_x + card_size, card_y + card_size),
+            radius=24,
+            fill="#242b3a",
         )
-        draw.rounded_rectangle((x, y, x + 92, y + 92), radius=14, fill="#232b3a")
-        draw.ellipse((x + 22, y + 16, x + 70, y + 64), fill=swatches[i % len(swatches)])
-        draw.text((x + 31, y + 25), str(i + 1), font=meta_font, fill="#11141c")
-        name = str(meta.get("name", ""))
-        _draw_text_fit(draw, (x, y + 102), name, small_font, "#dce4f2", 100)
+    badge_text = f"{top_wr * 100:.1f}%"
+    draw.rounded_rectangle((card_x, card_y + card_size - 62, card_x + 122, card_y + card_size), radius=18, fill="#0d111a")
+    draw.text((card_x + 14, card_y + card_size - 52), badge_text, font=meta_font, fill="#f8fbff")
+    if top_meta:
+        _draw_text_fit(draw, (card_x, card_y + card_size + 34), str(top_meta.get("name", "")), small_font, "#dce4f2", 220)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "PNG", optimize=True)
@@ -1875,11 +1882,9 @@ def render_html(
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
-    og_title = f"{header_title}資料庫"
-    og_desc = (
-        f"{patch_label} · {total_games:,} 場 LCU 樣本。"
-        "英雄勝率、augment、搭檔與組隊推薦。"
-    )
+    og_patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
+    og_title = og_patch_label
+    og_desc = "英雄 x 海克斯勝率、搭檔與組隊推薦"
 
     meta_lines: list[str] = []
     meta_lines.append("<meta charset='utf-8'>")
@@ -2786,7 +2791,8 @@ def main(
             )
             click.echo(f"[tierlist] wrote {og_asset_path}  ({og_asset_path.stat().st_size:,} bytes)")
             if site_url:
-                og_image = site_url.rstrip("/") + "/" + og_asset_path.name
+                og_version = (build_date or _dt.date.today().isoformat()).replace("-", "")
+                og_image = site_url.rstrip("/") + "/" + og_asset_path.name + f"?v={og_version}"
         except Exception as exc:
             click.echo(f"[tierlist] WARN: og image generation failed: {exc}")
 
