@@ -269,7 +269,7 @@ def write_og_image(
     total_games: int,
 ) -> None:
     """Write a square top-champion thumbnail for Open Graph cards."""
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import Image, ImageDraw
 
     top_record = records[0] if records else None
     top_meta = champ_meta.get(top_record["champion_id"]) if top_record else None
@@ -282,60 +282,7 @@ def write_og_image(
     card_x, card_y, card_size = 58, 58, 396
     frame_box = (card_x - 24, card_y - 24, card_x + card_size + 24, card_y + card_size + 24)
     draw.rounded_rectangle(frame_box, radius=36, fill="#080a10")
-
-    x1, y1, x2, y2 = frame_box
-    radius = 36
-    border_w = 14
-    stops = [
-        (0.00, (216, 184, 255)),
-        (0.28, (188, 214, 255)),
-        (0.56, (255, 213, 236)),
-        (0.82, (231, 213, 255)),
-        (1.00, (216, 184, 255)),
-    ]
-
-    def sample(t: float) -> tuple[int, int, int, int]:
-        for idx in range(len(stops) - 1):
-            left_t, left = stops[idx]
-            right_t, right = stops[idx + 1]
-            if t <= right_t:
-                local = 0.0 if right_t == left_t else (t - left_t) / (right_t - left_t)
-                rgb = tuple(int(left[c] + (right[c] - left[c]) * local) for c in range(3))
-                return (*rgb, 255)
-        return (*stops[-1][1], 255)
-
-    ring_mask = Image.new("L", img.size, 0)
-    ring_draw = ImageDraw.Draw(ring_mask)
-    ring_draw.rounded_rectangle(frame_box, radius=radius, fill=255)
-    ring_draw.rounded_rectangle(
-        (x1 + border_w, y1 + border_w, x2 - border_w, y2 - border_w),
-        radius=radius - border_w,
-        fill=0,
-    )
-
-    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_draw.rounded_rectangle((x1 - 5, y1 - 5, x2 + 5, y2 + 5), radius=radius + 5, outline=(216, 184, 255, 140), width=9)
-    glow_draw.rounded_rectangle((x1 - 10, y1 - 10, x2 + 10, y2 + 10), radius=radius + 10, outline=(188, 214, 255, 80), width=7)
-    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(7)))
-
-    gradient = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    px = gradient.load()
-    denom = max(1, (x2 - x1) + (y2 - y1))
-    for y in range(y1, y2 + 1):
-        for x in range(x1, x2 + 1):
-            if ring_mask.getpixel((x, y)):
-                px[x, y] = sample(((x - x1) + (y - y1)) / denom)
-    img.alpha_composite(gradient)
-
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle(
-        (x1 + border_w + 2, y1 + border_w + 2, x2 - border_w - 2, y2 - border_w - 2),
-        radius=radius - border_w - 2,
-        outline="#090c12",
-        width=4,
-    )
-
+    _draw_prismatic_frame(img, frame_box, 36)
     if top_meta and top_meta.get("image"):
         try:
             resp = httpx.get(top_meta["image"], timeout=5)
@@ -1052,7 +999,7 @@ def render_html(
 
     header_title, queue_label = _queue_copy(queue_id)
     header_title_en = "ARAM Mayhem Database" if queue_id == 2400 else queue_label
-    patch_label = f"patch {patch_prefix}.*" if patch_prefix else "all patches"
+    patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
 
     # Build the JS data payload. Keep it slim: only champs we render + their
     # picked augments / teammate synergy rows + the augment metadata for ids
@@ -2002,6 +1949,7 @@ def render_html(
         font-variant-numeric: tabular-nums;
         line-height: 1.35;
     }
+    .mate-card .mmeta .mmeta-z { white-space: nowrap; }
     .empty { color: #6b7280; font-size: 12px; }
     .footer {
         margin-top: 40px;
@@ -2110,7 +2058,27 @@ def render_html(
         /* Lock to 6 champions per row on mobile (instead of auto-fill which
            packs 7-8 in and makes icons tiny). */
         .tier-grid { grid-template-columns: repeat(6, 1fr); gap: 5px; }
+        .detail-head {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+        .detail-head .cmeta {
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .detail-section-head {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+        .section-meta {
+            font-size: 10px;
+            line-height: 1.4;
+        }
         .detail-cols { grid-template-columns: 1fr; gap: 14px; }
+        .detail-cols.pair-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .detail-cols.pair-cols .detail-col h3 { margin-bottom: 6px; font-size: 12px; }
         /* Drop the rarity colored bar (label) on mobile to recover horizontal
            space.  Each augment card still has a rarity-coloured border, so
            which row is which is obvious. */
@@ -2120,6 +2088,21 @@ def render_html(
            so force 5 columns and let each card shrink to fit. */
         .aug-list { grid-template-columns: repeat(5, 1fr); gap: 4px; }
         .mate-list { grid-template-columns: 1fr; gap: 6px; }
+        .detail-cols.pair-cols .mate-card {
+            grid-template-columns: 36px 1fr;
+            gap: 6px;
+            padding: 6px;
+        }
+        .detail-cols.pair-cols .mate-card img {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+        }
+        .detail-cols.pair-cols .mate-card .mname { font-size: 11px; }
+        .detail-cols.pair-cols .mate-card .mwr { font-size: 10px; }
+        .detail-cols.pair-cols .mate-card .mmeta { font-size: 9px; }
+        .detail-cols.pair-cols .mate-card .mmeta .mmeta-label,
+        .detail-cols.pair-cols .mate-card .mmeta .mmeta-games { display: none; }
         .aug { padding: 5px 3px; }
         .aug img { width: 36px; height: 36px; }
         .aug .aname { font-size: 9px; min-height: 22px; }
@@ -2255,7 +2238,7 @@ def render_html(
     parts.append(f"<h1 id='site-title'>{header_title}</h1>")
     parts.append(
         f"<div class='subtitle' id='site-subtitle'>"
-        f"{short_patch} · {date_str} ({total_games:,} games)"
+        f"{short_patch}"
         f"</div>"
     )
     parts.append("</div>")
@@ -2316,7 +2299,7 @@ def render_html(
         "<label class='search-wrap'>"
         f"{search_icon}"
         '<input class="search" id="champ-search" type="search" '
-        'placeholder="搜尋英雄（中 / 英）   Ctrl+F" autocomplete="off" '
+        'placeholder="搜尋英雄（中 / 英）" autocomplete="off" '
         'aria-label="搜尋英雄">'
         "</label>"
     )
@@ -2409,7 +2392,7 @@ def render_html(
     )
     if build_date:
         parts.append(
-            f"<div class='freshness' id='freshness-copy'>資料截至 {build_date}（{patch_label}）</div>"
+            f"<div class='freshness' id='freshness-copy'>{date_str}（{total_games:,} 場） · {patch_label}</div>"
         )
     parts.append(
         "<div class='disclaimer'>"
@@ -2459,8 +2442,9 @@ def render_html(
     const COPY = {
         zh: {
             htmlLang: 'zh-Hant',
-            subtitle: () => `${SHORT_PATCH_ZH} · ${DATE_STR_ZH} (${TOTAL_GAMES} games)`,
-            searchPlaceholder: '搜尋英雄（中 / 英）   Ctrl+F',
+            subtitle: () => `${SHORT_PATCH_ZH}`,
+            searchPlaceholderDesktop: '搜尋英雄（中 / 英）   Ctrl+F',
+            searchPlaceholderMobile: '搜尋英雄（中 / 英）',
             searchAria: '搜尋英雄',
             shownUnit: '隻',
             tierUnit: '隻',
@@ -2469,7 +2453,7 @@ def render_html(
             clearPicks: '清空選取',
             emptyTitle: '沒有符合條件的英雄',
             emptyCopy: '換個角色篩選，或試試英雄中／英文名。',
-            freshness: () => `資料截至 ${BUILD_DATE}（${PATCH_LABEL}）`,
+            freshness: () => `${DATE_STR_ZH}（${TOTAL_GAMES} 場） · ${PATCH_LABEL}`,
             sideTitle: '推薦組合排行',
             sideSub: 'Residual：兩隻英雄同隊的實際勝率 - 預期勝率。<br>z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>排行依排序分排列：平均 residual × 覆蓋率。',
             closeRecs: '關閉推薦組合',
@@ -2489,7 +2473,7 @@ def render_html(
             detailMeta: '左邊看 augment，下面看同隊兩兩搭檔',
             augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
             pairSectionTitle: '搭檔組合',
-            pairSectionMeta: minGames => `同隊兩兩組合，依 residual 相性排名，至少 ${minGames} 場`,
+            pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
             best: '最佳',
             worst: '最差',
             insufficient: '資料不足',
@@ -2498,7 +2482,7 @@ def render_html(
             augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
-            mateMeta: (lift, zText, games) => `${lift} residual · z ${zText} · ${games}場`,
+            mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
             expected: value => ` · 預期 ${value}`,
             detailSectionTitle: 'Augment',
             recRowTitle: (name, fit, liftAvg) => `${name} · 排序分 ${fit} · 平均 residual ${liftAvg}`,
@@ -2508,8 +2492,9 @@ def render_html(
         },
         en: {
             htmlLang: 'en',
-            subtitle: () => `${PATCH_LABEL} · Updated ${BUILD_DATE} (${TOTAL_GAMES} games)`,
-            searchPlaceholder: 'Search champions (ZH / EN)   Ctrl+F',
+            subtitle: () => `${PATCH_LABEL}`,
+            searchPlaceholderDesktop: 'Search champions (ZH / EN)   Ctrl+F',
+            searchPlaceholderMobile: 'Search champions (ZH / EN)',
             searchAria: 'Search champions',
             shownUnit: 'shown',
             tierUnit: 'shown',
@@ -2518,7 +2503,7 @@ def render_html(
             clearPicks: 'Clear picks',
             emptyTitle: 'No champions match the current filters',
             emptyCopy: 'Try a different role, or search by Chinese / English champion name.',
-            freshness: () => `Data through ${BUILD_DATE} (${PATCH_LABEL})`,
+            freshness: () => `Updated ${BUILD_DATE} (${TOTAL_GAMES} games) · ${PATCH_LABEL}`,
             sideTitle: 'Recommended teammates',
             sideSub: 'Residual = actual same-team win rate minus expected win rate.<br>z = residual divided by standard error; higher means the signal is less likely to be sample noise.<br>Rows are ranked by average residual × coverage.',
             closeRecs: 'Close recommendations',
@@ -2538,7 +2523,7 @@ def render_html(
             detailMeta: 'Augments on the left, same-team pairings below',
             augSectionMeta: 'Best / worst 5 from each rarity',
             pairSectionTitle: 'Pairings',
-            pairSectionMeta: minGames => `Same-team pairs ranked by residual fit, at least ${minGames} games`,
+            pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
             best: 'Best',
             worst: 'Worst',
             insufficient: 'Not enough data',
@@ -2547,7 +2532,7 @@ def render_html(
             augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
-            mateMeta: (lift, zText, games) => `${lift} residual · z ${zText} · ${games} games`,
+            mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games} games</span>`,
             expected: value => ` · expected ${value}`,
             detailSectionTitle: 'Augments',
             recRowTitle: (name, fit, liftAvg) => `${name} · fit score ${fit} · average residual ${liftAvg}`,
@@ -2560,6 +2545,24 @@ def render_html(
 
     function tr() {
         return COPY[currentLang] || COPY.zh;
+    }
+
+    function isMobileViewport() {
+        return window.matchMedia('(max-width: 700px)').matches;
+    }
+
+    function searchPlaceholderFor(copy) {
+        return isMobileViewport()
+            ? copy.searchPlaceholderMobile
+            : copy.searchPlaceholderDesktop;
+    }
+
+    function updateSearchPlaceholder() {
+        const searchEl = document.getElementById('champ-search');
+        if (!searchEl) return;
+        const copy = tr();
+        searchEl.placeholder = searchPlaceholderFor(copy);
+        searchEl.setAttribute('aria-label', copy.searchAria);
     }
 
     function champName(info) {
@@ -2659,7 +2662,7 @@ def render_html(
                     <div>
                         <div class="mname">${escHtml(name)}</div>
                         <div class="mwr">${pct(entry.wr)}</div>
-                        <div class="mmeta">${copy.mateMeta(signed(entry.lift), zText, entry.g)}</div>
+                        <div class="mmeta">${copy.mateMetaHtml(signed(entry.lift), zText, entry.g)}</div>
                     </div>
                 </div>
             `;
@@ -2678,7 +2681,7 @@ def render_html(
                     <h3>${copy.detailSectionTitle}</h3>
                     <span class="section-meta">${copy.augSectionMeta}</span>
                 </div>
-                <div class="detail-cols">
+                <div class="detail-cols pair-cols">
                     <div class="detail-col best">
                         <h3>${copy.best}</h3>
                         ${topRows}
@@ -2909,11 +2912,7 @@ def render_html(
         if (titleEl) titleEl.textContent = currentLang === 'en' ? HEADER_TITLE_EN : HEADER_TITLE_ZH;
         const subtitleEl = document.getElementById('site-subtitle');
         if (subtitleEl) subtitleEl.innerHTML = copy.subtitle();
-        const searchEl = document.getElementById('champ-search');
-        if (searchEl) {
-            searchEl.placeholder = copy.searchPlaceholder;
-            searchEl.setAttribute('aria-label', copy.searchAria);
-        }
+        updateSearchPlaceholder();
         const shownUnit = document.getElementById('shown-unit');
         if (shownUnit) shownUnit.textContent = copy.shownUnit;
         document.querySelectorAll('.tier-count-unit').forEach(el => {
@@ -3084,6 +3083,7 @@ def render_html(
     window.addEventListener('resize', () => {
         clearTimeout(resizeT);
         resizeT = setTimeout(() => {
+            updateSearchPlaceholder();
             renderSidePanel();
             if (!detailSelected) return;
             const champ = document.querySelector(`.champ[data-cid="${detailSelected}"].detail-selected`);
