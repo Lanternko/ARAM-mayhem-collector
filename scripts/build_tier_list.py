@@ -136,6 +136,18 @@ MAYHEM_AUGMENT_SETS = {
     ],
 }
 
+MAYHEM_AUGMENT_SET_LABELS = {
+    "Archmage": {"zh": "大法師", "en": "Archmage"},
+    "Dive Bomb": {"zh": "俯衝轟炸", "en": "Dive Bomb"},
+    "Firecracker": {"zh": "爆竹", "en": "Firecracker"},
+    "Fully Automated": {"zh": "全自動", "en": "Fully Automated"},
+    "High Roller": {"zh": "豪賭", "en": "High Roller"},
+    "Make it Rain": {"zh": "天降財雨", "en": "Make it Rain"},
+    "Snowday": {"zh": "雪球日", "en": "Snowday"},
+    "Stackosaurus Rex": {"zh": "疊疊暴龍", "en": "Stackosaurus Rex"},
+    "Wee Woo Wee Woo": {"zh": "警笛大響", "en": "Wee Woo Wee Woo"},
+}
+
 
 def _slugify_set_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -149,8 +161,17 @@ def _augment_set_lookup() -> dict[str, list[dict[str, str]]]:
     lookup: dict[str, list[dict[str, str]]] = {}
     for set_name, aug_names in MAYHEM_AUGMENT_SETS.items():
         slug = _slugify_set_name(set_name)
+        labels = MAYHEM_AUGMENT_SET_LABELS.get(
+            set_name,
+            {"zh": set_name, "en": set_name},
+        )
         for aug_name in aug_names:
-            info = {"name": set_name, "slug": slug}
+            info = {
+                "name": set_name,
+                "name_zh": labels["zh"],
+                "name_en": labels["en"],
+                "slug": slug,
+            }
             lookup.setdefault(_normalize_augment_name(aug_name), []).append(info)
             if aug_name.startswith("Upgrade: "):
                 lookup.setdefault(
@@ -691,6 +712,8 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
             "desc_zh": "",
             "desc_en": "",
             "set": " / ".join(info["name"] for info in set_infos),
+            "set_zh": " / ".join(info["name_zh"] for info in set_infos),
+            "set_en": " / ".join(info["name_en"] for info in set_infos),
             "setSlug": " ".join(info["slug"] for info in set_infos),
             "sets": set_infos,
         }
@@ -942,6 +965,234 @@ def build_champ_augment_picks(
     return out
 
 
+def build_champ_set_affinity(
+    champ_aug: list[dict],
+    aug_meta: dict[int, dict],
+    *,
+    min_games_per_set: int,
+    top_n: int = 4,
+    bot_n: int = 4,
+) -> dict[int, dict]:
+    """Aggregate per-augment rows into champion x augment-set affinity.
+
+    `lift` asks whether a champion performs better with this set than their
+    own baseline. `residual` then subtracts the global set lift, so generally
+    strong sets do not automatically look like good champion-specific fits.
+    """
+    cs_games: Counter[tuple[int, str]] = Counter()
+    cs_wins: Counter[tuple[int, str]] = Counter()
+    cs_baseline_games: Counter[tuple[int, str]] = Counter()
+    set_games: Counter[str] = Counter()
+    set_wins: Counter[str] = Counter()
+    set_baseline_games: Counter[str] = Counter()
+    set_names: dict[str, dict[str, str]] = {}
+
+    for row in champ_aug:
+        meta = aug_meta.get(row["augment_id"])
+        if not meta:
+            continue
+        memberships = meta.get("sets") or []
+        if not memberships:
+            continue
+        games = int(row["games"])
+        wins = int(row["wins"])
+        baseline_games = float(row.get("baseline_wr", 0.5)) * games
+        for info in memberships:
+            slug = str(info.get("slug") or "")
+            if not slug:
+                continue
+            name_info = {
+                "name": str(info.get("name") or slug),
+                "name_zh": str(info.get("name_zh") or info.get("name") or slug),
+                "name_en": str(info.get("name_en") or info.get("name") or slug),
+            }
+            key = (int(row["champion_id"]), slug)
+            cs_games[key] += games
+            cs_wins[key] += wins
+            cs_baseline_games[key] += baseline_games
+            set_games[slug] += games
+            set_wins[slug] += wins
+            set_baseline_games[slug] += baseline_games
+            set_names[slug] = name_info
+
+    set_avg_lift: dict[str, float] = {}
+    for slug, games in set_games.items():
+        if games <= 0:
+            continue
+        set_wr = set_wins[slug] / games
+        set_baseline = set_baseline_games[slug] / games
+        set_avg_lift[slug] = set_wr - set_baseline
+
+    pair_k = 30.0
+    by_champ: dict[int, list[dict]] = {}
+    for (cid, slug), games in cs_games.items():
+        if games < min_games_per_set:
+            continue
+        wins = cs_wins[(cid, slug)]
+        baseline = cs_baseline_games[(cid, slug)] / games
+        raw = wins / games if games else baseline
+        smoothed = (wins + baseline * pair_k) / (games + pair_k)
+        lift = smoothed - baseline
+        avg_lift = set_avg_lift.get(slug, 0.0)
+        set_name_info = set_names.get(
+            slug,
+            {"name": slug, "name_zh": slug, "name_en": slug},
+        )
+        by_champ.setdefault(cid, []).append({
+            "set": set_name_info["name"],
+            "set_zh": set_name_info["name_zh"],
+            "set_en": set_name_info["name_en"],
+            "slug": slug,
+            "games": games,
+            "wins": wins,
+            "raw_wr": raw,
+            "smoothed_wr": smoothed,
+            "baseline_wr": baseline,
+            "lift": lift,
+            "avg_lift": avg_lift,
+            "residual": lift - avg_lift,
+        })
+
+    out: dict[int, dict] = {}
+    for cid, rows in by_champ.items():
+        rows.sort(key=lambda r: (-r["residual"], -abs(r["lift"]), -r["games"], r["set"]))
+        out[cid] = {
+            "top": rows[:top_n],
+            "bot": sorted(rows, key=lambda r: (r["residual"], r["games"], r["set"]))[:bot_n],
+        }
+    return out
+
+
+def compute_champ_set_affinity(
+    db_path: Path,
+    queue_id: int,
+    patch_prefix: str | None,
+    aug_meta: dict[int, dict],
+    champ_records: list[dict],
+    *,
+    min_games_per_set: int,
+    top_n: int = 4,
+    bot_n: int = 4,
+) -> dict[int, dict]:
+    """Compute champion x augment-set affinity from player-games.
+
+    A player-game counts once for a set if that participant picked one or more
+    augments from the set. This keeps the displayed `games` value literal while
+    still capturing the performance of set-oriented builds.
+    """
+    baseline_by_champ = {
+        int(row["champion_id"]): float(row.get("raw_wr", 0.5))
+        for row in champ_records
+    }
+    con = sqlite3.connect(str(db_path))
+    if patch_prefix:
+        rows = list(
+            con.execute(
+                "SELECT blue_wins, participants_json FROM games "
+                "WHERE queue_id=? AND patch LIKE ? AND participants_json IS NOT NULL",
+                (queue_id, f"{patch_prefix}%"),
+            )
+        )
+    else:
+        rows = list(
+            con.execute(
+                "SELECT blue_wins, participants_json FROM games "
+                "WHERE queue_id=? AND participants_json IS NOT NULL",
+                (queue_id,),
+            )
+        )
+    con.close()
+
+    cs_games: Counter[tuple[int, str]] = Counter()
+    cs_wins: Counter[tuple[int, str]] = Counter()
+    cs_baseline_games: Counter[tuple[int, str]] = Counter()
+    set_games: Counter[str] = Counter()
+    set_wins: Counter[str] = Counter()
+    set_baseline_games: Counter[str] = Counter()
+    set_names: dict[str, dict[str, str]] = {}
+
+    for blue_wins, participants_json in rows:
+        if not participants_json:
+            continue
+        blue_won = bool(blue_wins)
+        for participant in json.loads(participants_json):
+            cid = int(participant.get("championId", 0) or 0)
+            team_id = int(participant.get("teamId", 0) or 0)
+            if cid <= 0 or team_id not in (100, 200):
+                continue
+            seen_sets: dict[str, dict[str, str]] = {}
+            for augment_id in participant.get("augments") or []:
+                meta = aug_meta.get(int(augment_id))
+                if not meta:
+                    continue
+                for info in meta.get("sets") or []:
+                    slug = str(info.get("slug") or "")
+                    if slug:
+                        seen_sets[slug] = {
+                            "name": str(info.get("name") or slug),
+                            "name_zh": str(info.get("name_zh") or info.get("name") or slug),
+                            "name_en": str(info.get("name_en") or info.get("name") or slug),
+                        }
+            if not seen_sets:
+                continue
+            player_won = 1 if (team_id == 100) == blue_won else 0
+            baseline = baseline_by_champ.get(cid, 0.5)
+            for slug, name_info in seen_sets.items():
+                key = (cid, slug)
+                cs_games[key] += 1
+                cs_wins[key] += player_won
+                cs_baseline_games[key] += baseline
+                set_games[slug] += 1
+                set_wins[slug] += player_won
+                set_baseline_games[slug] += baseline
+                set_names[slug] = name_info
+
+    set_avg_lift: dict[str, float] = {}
+    for slug, games in set_games.items():
+        if games <= 0:
+            continue
+        set_avg_lift[slug] = (set_wins[slug] / games) - (set_baseline_games[slug] / games)
+
+    pair_k = 30.0
+    by_champ: dict[int, list[dict]] = {}
+    for (cid, slug), games in cs_games.items():
+        if games < min_games_per_set:
+            continue
+        wins = cs_wins[(cid, slug)]
+        baseline = cs_baseline_games[(cid, slug)] / games
+        raw = wins / games if games else baseline
+        smoothed = (wins + baseline * pair_k) / (games + pair_k)
+        lift = smoothed - baseline
+        avg_lift = set_avg_lift.get(slug, 0.0)
+        set_name_info = set_names.get(
+            slug,
+            {"name": slug, "name_zh": slug, "name_en": slug},
+        )
+        by_champ.setdefault(cid, []).append({
+            "set": set_name_info["name"],
+            "set_zh": set_name_info["name_zh"],
+            "set_en": set_name_info["name_en"],
+            "slug": slug,
+            "games": games,
+            "wins": wins,
+            "raw_wr": raw,
+            "smoothed_wr": smoothed,
+            "baseline_wr": baseline,
+            "lift": lift,
+            "avg_lift": avg_lift,
+            "residual": lift - avg_lift,
+        })
+
+    out: dict[int, dict] = {}
+    for cid, rows in by_champ.items():
+        rows.sort(key=lambda r: (-r["residual"], -abs(r["lift"]), -r["games"], r["set"]))
+        out[cid] = {
+            "top": rows[:top_n],
+            "bot": sorted(rows, key=lambda r: (r["residual"], r["games"], r["set"]))[:bot_n],
+        }
+    return out
+
+
 def build_champ_synergy_index(
     champ_pairs: list[dict],
     *,
@@ -975,6 +1226,7 @@ def render_html(
     records: list[dict],
     champ_meta: dict[int, dict],
     champ_picks: dict[int, dict],
+    champ_sets: dict[int, dict],
     champ_synergy: dict[int, list[dict]],
     aug_meta: dict[int, dict],
     *,
@@ -1015,6 +1267,19 @@ def render_html(
             "lift": round(r["lift"], 4),
         }
 
+    def _pack_set(r: dict) -> dict:
+        return {
+            "name": r["set"],
+            "name_zh": r.get("set_zh", r["set"]),
+            "name_en": r.get("set_en", r["set"]),
+            "slug": r["slug"],
+            "g": r["games"],
+            "wr": round(r["smoothed_wr"], 4),
+            "lift": round(r["lift"], 4),
+            "avg": round(r["avg_lift"], 4),
+            "res": round(r["residual"], 4),
+        }
+
     visible_cids = [int(r["champion_id"]) for r in records]
     visible_cid_set = set(visible_cids)
     for cid in visible_cids:
@@ -1052,6 +1317,10 @@ def render_html(
             "tags": meta.get("tags") or [],
             "top": top_buckets,
             "bot": bot_buckets,
+            "sets": {
+                "top": [_pack_set(r) for r in champ_sets.get(cid, {}).get("top", [])],
+                "bot": [_pack_set(r) for r in champ_sets.get(cid, {}).get("bot", [])],
+            },
             "pairs": pairs,
         }
     js_augs = {
@@ -1065,6 +1334,8 @@ def render_html(
             "desc_zh": aug_meta[aid].get("desc_zh", aug_meta[aid].get("desc", "")),
             "desc_en": aug_meta[aid].get("desc_en", ""),
             "set": aug_meta[aid].get("set", ""),
+            "set_zh": aug_meta[aid].get("set_zh", aug_meta[aid].get("set", "")),
+            "set_en": aug_meta[aid].get("set_en", aug_meta[aid].get("set", "")),
             "setSlug": aug_meta[aid].get("setSlug", ""),
             "sets": aug_meta[aid].get("sets", []),
         }
@@ -1731,6 +2002,32 @@ def render_html(
         font-size: 11px;
         font-family: "Noto Serif TC", "Source Han Serif TC", serif;
     }
+    .aug-set-summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        max-width: 100%;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(143, 216, 244, 0.10);
+        border: 1px solid rgba(143, 216, 244, 0.24);
+        color: #c9eefa;
+        font-size: 10px;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: help;
+    }
+    .aug-set-summary.bad {
+        background: rgba(255, 125, 125, 0.09);
+        border-color: rgba(255, 125, 125, 0.24);
+        color: #ffd1d1;
+    }
+    .aug-set-summary .sum-item {
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
     .detail-cols {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1742,6 +2039,15 @@ def render_html(
         font-weight: 600;
         letter-spacing: 0.3px;
     }
+    .detail-col-heading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+    .detail-col-heading h3 { margin: 0; }
     .detail-col.best h3 { color: #6bd16b; }
     .detail-col.worst h3 { color: #ff6b6b; }
     .rarity-row {
@@ -1817,20 +2123,6 @@ def render_html(
         font-size: 9px;
         color: #9aa0a6;
         margin-top: 1px;
-    }
-    .aug .aset {
-        display: inline-block;
-        max-width: 100%;
-        margin-top: 3px;
-        padding: 1px 5px;
-        border-radius: 999px;
-        background: rgba(86, 180, 211, 0.14);
-        color: #8fd8f4;
-        font-size: 8px;
-        line-height: 1.35;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
     }
     /* Custom hover popup with augment description.  Native title is kept too
        as an accessibility/fallback path. */
@@ -2072,6 +2364,11 @@ def render_html(
             align-items: flex-start;
             gap: 4px;
         }
+        .detail-title-row { width: 100%; }
+        .aug-set-summary {
+            max-width: 100%;
+            white-space: normal;
+        }
         .section-meta {
             font-size: 10px;
             line-height: 1.4;
@@ -2110,7 +2407,6 @@ def render_html(
         /* Hide the lift% / games count on mobile - keep cards compact.
            Numbers still available on hover (tooltip) and via the title attr. */
         .aug .alift { display: none; }
-        .aug .aset { display: none; }
         .aug-tip { width: 170px; font-size: 10px; }
         /* Touch-target floor (WCAG 2.5.5).  Chips were 4×10 padding on 11px
            font ≈ 32 px tall.  Bump to a real 44 px tap area without growing
@@ -2439,6 +2735,7 @@ def render_html(
     const PATCH_LABEL = __PATCH_LABEL__;
     const TOTAL_GAMES = __TOTAL_GAMES__;
     const LANG_KEY = 'aram-mayhem-site-lang';
+    const SET_RESIDUAL_THRESHOLD = 0.02;
     const COPY = {
         zh: {
             htmlLang: 'zh-Hant',
@@ -2474,15 +2771,20 @@ def render_html(
             augSectionMeta: '每種稀有度各取最佳 / 最差 5 個',
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
+            setSectionTitle: 'Augment 系列相性',
+            setSectionMeta: '依照英雄和系列的適配度排名，不是單純看系列整體強度',
             best: '最佳',
             worst: '最差',
             insufficient: '資料不足',
             rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
-            augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
+            augSetLabel: '系列',
+            augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · 系列：' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
+            setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · 英雄 lift ${lift} · 全體平均 ${avg} · WR ${wr} · ${games}場`,
+            setMeta: (lift, avg, wr, games) => `英雄 ${lift} · 全體 ${avg} · WR ${wr} · ${games}場`,
             expected: value => ` · 預期 ${value}`,
             detailSectionTitle: 'Augment',
             recRowTitle: (name, fit, liftAvg) => `${name} · 排序分 ${fit} · 平均 residual ${liftAvg}`,
@@ -2524,15 +2826,20 @@ def render_html(
             augSectionMeta: 'Best / worst 5 from each rarity',
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
+            setSectionTitle: 'Augment Sets',
+            setSectionMeta: 'Ranked by champion-set fit, not raw set strength',
             best: 'Best',
             worst: 'Worst',
             insufficient: 'Not enough data',
             rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
+            augSetLabel: 'Set',
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games} games${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games} games</span>`,
+            setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · champion lift ${lift} · global average ${avg} · WR ${wr} · ${games} games`,
+            setMeta: (lift, avg, wr, games) => `champ ${lift} · global ${avg} · WR ${wr} · ${games} games`,
             expected: value => ` · expected ${value}`,
             detailSectionTitle: 'Augments',
             recRowTitle: (name, fit, liftAvg) => `${name} · fit score ${fit} · average residual ${liftAvg}`,
@@ -2581,19 +2888,31 @@ def render_html(
         return aug.desc_zh || aug.desc || '';
     }
 
+    function augSetName(aug) {
+        if (!aug) return '';
+        if (currentLang === 'en') return aug.set_en || aug.set || '';
+        return aug.set_zh || aug.set || aug.set_en || '';
+    }
+
+    function setEntryName(entry) {
+        if (!entry) return '';
+        if (currentLang === 'en') return entry.name_en || entry.name || '';
+        return entry.name_zh || entry.name || entry.name_en || '';
+    }
+
     function buildAugCard(entry, kind) {
         const aug = DATA.augs[entry.id];
         const name = aug ? augName(aug) : '#' + entry.id;
         const icon = aug && aug.icon ? aug.icon : '';
         const rarity = aug ? (aug.rarity || '') : '';
         const desc = augDesc(aug);
-        const setName = aug && aug.set ? aug.set : '';
+        const setName = augSetName(aug);
         const copy = tr();
         const titleAttr = copy.augTitle(name, setName, pct(entry.wr), entry.g, desc);
         const tooltip = `
             <div class="aug-tip">
                 <div class="aug-tip-name">${escHtml(name)}</div>
-                ${setName ? `<div class="aug-tip-set">Set: ${escHtml(setName)}</div>` : ''}
+                ${setName ? `<div class="aug-tip-set">${copy.augSetLabel}: ${escHtml(setName)}</div>` : ''}
                 ${desc ? `<div class="aug-tip-desc">${escHtml(desc)}</div>` : ''}
                 <div class="aug-tip-stat">${copy.augTipStat(pct(entry.wr), signed(entry.lift), entry.g)}</div>
             </div>
@@ -2610,7 +2929,6 @@ def render_html(
                 <div class="aname">${escHtml(name)}</div>
                 <div class="awr">${pct(entry.wr)}</div>
                 <div class="alift">${signed(entry.lift)} · ${entry.g}場</div>
-                ${setName ? `<div class="aset">${escHtml(setName)}</div>` : ''}
                 ${tooltip}
             </div>
         `;
@@ -2644,6 +2962,9 @@ def render_html(
         const copy = tr();
         const top = info.top || {};
         const bot = info.bot || {};
+        const setInfo = info.sets || {};
+        const setTop = setInfo.top || [];
+        const setBot = setInfo.bot || [];
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
         const botRows = RARITIES.map(r => buildRarityRow(bot[r.key], 'bad', r)).join('');
         const pairs = info.pairs || [];
@@ -2671,6 +2992,21 @@ def render_html(
             if (!items.length) return `<div class="mate-list empty-list">${copy.insufficient}</div>`;
             return `<div class="mate-list">${items.map(entry => buildMateCard(entry, kind)).join('')}</div>`;
         };
+        const buildSetSummary = (rows, bad = false) => {
+            const visibleSets = rows
+                .filter(entry => bad ? entry.res <= -SET_RESIDUAL_THRESHOLD : entry.res >= SET_RESIDUAL_THRESHOLD)
+                .slice(0, 3);
+            if (!visibleSets.length) return '';
+            const titleAttr = visibleSets.map(entry => {
+                const name = setEntryName(entry);
+                return `${name} residual ${signed(entry.res)}, lift ${signed(entry.lift)}, set avg ${signed(entry.avg)}, WR ${pct(entry.wr)}, ${entry.g} games`;
+            }).join('\\n');
+            return `
+                <div class="aug-set-summary ${bad ? 'bad' : ''}" title="${escHtml(titleAttr)}">
+                    ${visibleSets.map(entry => `<span class="sum-item">${escHtml(setEntryName(entry))}</span>`).join('')}
+                </div>
+            `;
+        };
         return `
             <div class="detail-head">
                 <span class="cname">${champName(info)}</span>
@@ -2683,11 +3019,17 @@ def render_html(
                 </div>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
-                        <h3>${copy.best}</h3>
+                        <div class="detail-col-heading">
+                            <h3>${copy.best}</h3>
+                            ${buildSetSummary(setTop)}
+                        </div>
                         ${topRows}
                     </div>
                     <div class="detail-col worst">
-                        <h3>${copy.worst}</h3>
+                        <div class="detail-col-heading">
+                            <h3>${copy.worst}</h3>
+                            ${buildSetSummary(setBot, true)}
+                        </div>
                         ${botRows}
                     </div>
                 </div>
@@ -3287,13 +3629,6 @@ def main(
     patch_prefix = patch_prefix or None
     click.echo(f"[tierlist] db={db}  queue={queue_id}  patch_prefix={patch_prefix}")
 
-    champ_records, champ_aug, champ_pairs = compute_winrates(db, queue_id, patch_prefix)
-    total_games = sum(r["games"] for r in champ_records) // 10
-    champ_records = [r for r in champ_records if r["games"] >= min_games]
-    click.echo(f"[tierlist] {len(champ_records)} champions after min_games={min_games}")
-    click.echo(f"[tierlist] {len(champ_aug):,} (champ, augment) pairs total")
-    click.echo(f"[tierlist] {len(champ_pairs):,} ordered same-team champion pairs total")
-
     version, champ_meta = load_champion_metadata(ddragon_version)
     click.echo(f"[tierlist] data dragon version: {version}")
 
@@ -3303,6 +3638,13 @@ def main(
         f"[tierlist] augment catalogue: {len(aug_meta)} entries "
         f"({desc_n} with zh-TW description)"
     )
+
+    champ_records, champ_aug, champ_pairs = compute_winrates(db, queue_id, patch_prefix)
+    total_games = sum(r["games"] for r in champ_records) // 10
+    champ_records = [r for r in champ_records if r["games"] >= min_games]
+    click.echo(f"[tierlist] {len(champ_records)} champions after min_games={min_games}")
+    click.echo(f"[tierlist] {len(champ_aug):,} (champ, augment) pairs total")
+    click.echo(f"[tierlist] {len(champ_pairs):,} ordered same-team champion pairs total")
 
     picks = build_champ_augment_picks(
         champ_aug,
@@ -3314,6 +3656,18 @@ def main(
     click.echo(
         f"[tierlist] {len(picks)} champions have >= 1 rarity-bucketed pair "
         f"(games >= {min_pair_games})"
+    )
+    set_affinity = compute_champ_set_affinity(
+        db,
+        queue_id,
+        patch_prefix,
+        aug_meta,
+        champ_records,
+        min_games_per_set=max(min_pair_games * 3, 45),
+    )
+    click.echo(
+        f"[tierlist] {len(set_affinity)} champions have >= 1 augment-set affinity row "
+        f"(games >= {max(min_pair_games * 3, 45)})"
     )
     synergy = build_champ_synergy_index(
         champ_pairs,
@@ -3349,6 +3703,7 @@ def main(
         champ_records,
         champ_meta,
         picks,
+        set_affinity,
         synergy,
         aug_meta,
         queue_id=queue_id,
