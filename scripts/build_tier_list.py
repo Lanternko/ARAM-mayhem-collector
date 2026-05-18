@@ -3168,6 +3168,72 @@ def render_html(
         font-size: 11px;
         font-family: "Noto Serif TC", "Source Han Serif TC", serif;
     }
+    .augment-strength-meta {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        margin: -2px 0 10px;
+    }
+    .meta-help-wrap {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+    }
+    .meta-help {
+        width: 15px;
+        height: 15px;
+        border-radius: 999px;
+        border: 1px solid rgba(154,160,166,0.58);
+        background: #1b2030;
+        color: #c5cad3;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        font: inherit;
+        font-size: 10px;
+        line-height: 1;
+        cursor: help;
+    }
+    .meta-help:hover,
+    .meta-help:focus-visible {
+        border-color: rgba(245,215,128,0.72);
+        color: #f5d780;
+    }
+    .meta-help-tip {
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 7px);
+        transform: translateX(-50%);
+        width: min(260px, calc(100vw - 32px));
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: #0b0e13;
+        color: #d4dae4;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.55);
+        font-family: "Noto Sans TC", -apple-system, "Segoe UI", sans-serif;
+        font-size: 11px;
+        line-height: 1.5;
+        text-align: left;
+        pointer-events: none;
+        opacity: 0;
+        z-index: 52;
+        transition: opacity 0.12s ease-out;
+    }
+    .meta-help-tip::after {
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: #0b0e13;
+    }
+    .meta-help-wrap:hover .meta-help-tip,
+    .meta-help:focus-visible + .meta-help-tip {
+        opacity: 1;
+    }
     .aug-set-summary {
         display: inline-flex;
         align-items: center;
@@ -3415,11 +3481,6 @@ def render_html(
         font-size: 10px;
         border-top: 1px solid rgba(255,255,255,0.08);
         padding-top: 4px;
-    }
-    .aug-tip-score {
-        color: #d4dae4;
-        font-size: 10px;
-        margin-top: 4px;
     }
     .aug-tip-set {
         color: #8fd8f4;
@@ -3713,6 +3774,7 @@ def render_html(
     .tool-btn:focus-visible,
     .side-close:focus-visible,
     .detail-close:focus-visible,
+    .meta-help:focus-visible,
     .rec-fab:focus-visible,
     .pick-chip:focus-visible,
     .rec-row:focus-visible,
@@ -4092,6 +4154,8 @@ def render_html(
             worst: '最差',
             bestAugments: '最佳增幅裝置',
             worstAugments: '最差增幅裝置',
+            augmentStrengthMeta: '強度綜合參考勝率與選取率',
+            augmentStrengthTip: '排序以勝率提升的保守估計為主，並搭配選取率判斷樣本穩定度；低選取率的高勝率會更保守看待。',
             weak: '偏弱',
             insufficient: '資料不足',
             rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
@@ -4099,7 +4163,6 @@ def render_html(
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · 系列：' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
-            augScoreNote: (score, pick, peerPick) => `強度分數 ${score}：勝率提升的保守估計；選取率 ${pick}（同類 ${peerPick}）只作參考。`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · 英雄 lift ${lift} · 全體平均 ${avg} · WR ${wr} · ${games}場`,
@@ -4153,6 +4216,8 @@ def render_html(
             worst: 'Worst',
             bestAugments: 'Best Augments',
             worstAugments: 'Worst Augments',
+            augmentStrengthMeta: 'Strength considers both win rate and pick rate',
+            augmentStrengthTip: 'Ranking is led by conservative win-rate lift, with pick rate used as a stability signal; low-pick high-win results are treated more carefully.',
             weak: 'Weak',
             insufficient: 'Not enough data',
             rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
@@ -4160,7 +4225,6 @@ def render_html(
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games} games${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
-            augScoreNote: (score, pick, peerPick) => `Strength score ${score}: conservative win-rate lift; pick rate ${pick} (peer ${peerPick}) is context, not a penalty.`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games} games</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · champion lift ${lift} · global average ${avg} · WR ${wr} · ${games} games`,
@@ -4232,19 +4296,12 @@ def render_html(
         const setName = augSetName(aug);
         const copy = tr();
         const titleAttr = copy.augTitle(name, setName, pct(entry.wr), entry.g, desc);
-        const scoreValue = entry.score !== undefined ? entry.score : entry.lift;
-        const scoreNote = copy.augScoreNote(
-            signed(scoreValue),
-            pct(entry.pick || 0),
-            pct(entry.peerPick || 0)
-        );
         const tooltip = `
             <div class="aug-tip">
                 <div class="aug-tip-name">${escHtml(name)}</div>
                 ${setName ? `<div class="aug-tip-set">${copy.augSetLabel}: ${escHtml(setName)}</div>` : ''}
                 ${desc ? `<div class="aug-tip-desc">${escHtml(desc)}</div>` : ''}
                 <div class="aug-tip-stat">${copy.augTipStat(pct(entry.wr), signed(entry.lift), entry.g)}</div>
-                <div class="aug-tip-score">${escHtml(scoreNote)}</div>
             </div>
         `;
         // Augment card carries its own ARIA semantics so screen readers and
@@ -4389,6 +4446,13 @@ def render_html(
                 <span class="cname" id="detail-title-${cid}">${escHtml(champName(info))}</span>
             </div>
             <div class="detail-section">
+                <span class="section-meta augment-strength-meta">
+                    ${copy.augmentStrengthMeta}
+                    <span class="meta-help-wrap">
+                        <button class="meta-help" type="button" aria-label="${escHtml(copy.augmentStrengthTip)}">?</button>
+                        <span class="meta-help-tip" role="tooltip">${escHtml(copy.augmentStrengthTip)}</span>
+                    </span>
+                </span>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
                         <div class="detail-col-heading">
