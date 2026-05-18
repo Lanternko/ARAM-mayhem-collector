@@ -2780,6 +2780,14 @@ def render_html(
         border-color: rgba(245,215,128,0.28);
         transform: translateY(-1px);
     }
+    .rec-row.least-fit {
+        background: linear-gradient(135deg, rgba(54, 24, 30, 0.82), #1b2030 72%);
+        border-color: rgba(255,138,138,0.22);
+    }
+    .rec-row.least-fit:hover {
+        background: linear-gradient(135deg, rgba(66, 28, 35, 0.9), #20263a 72%);
+        border-color: rgba(255,138,138,0.38);
+    }
     .rec-rank {
         color: #9aa0a6;
         font-size: 11px;
@@ -2787,6 +2795,7 @@ def render_html(
         text-align: center;
         font-variant-numeric: tabular-nums;
     }
+    .rec-row.least-fit .rec-rank { color: #ff8a8a; }
     .rec-row img {
         width: 40px;
         height: 40px;
@@ -2847,6 +2856,7 @@ def render_html(
     .rec-score.fit-solid { color: oklch(0.76 0.09 92); }
     .rec-score.fit-soft { color: oklch(0.68 0.06 92); }
     .rec-score.fit-floor { color: #9aa0a6; }
+    .rec-score.fit-worst { color: #ff8a8a; }
     .rec-detail {
         display: grid;
         grid-template-columns: auto auto auto;
@@ -4169,6 +4179,8 @@ def render_html(
             setMeta: (lift, avg, wr, games) => `英雄 ${lift} · 全體 ${avg} · WR ${wr} · ${games}場`,
             expected: value => ` · 預期 ${value}`,
             recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · 推薦度 ${fit} · 搭配 ${pairFit} · 陣容 ${comp} · ${confidence}`,
+            leastFitLabel: '最不適配',
+            leastFitRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · 最不適配 ${fit} · 搭配 ${pairFit} · 陣容 ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}，tier ${tier}，勝率 ${wr}`,
         },
@@ -4231,6 +4243,8 @@ def render_html(
             setMeta: (lift, avg, wr, games) => `champ ${lift} · global ${avg} · WR ${wr} · ${games} games`,
             expected: value => ` · expected ${value}`,
             recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · fit ${fit} · pair ${pairFit} · comp ${comp} · ${confidence}`,
+            leastFitLabel: 'Least fit',
+            leastFitRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · least fit ${fit} · pair ${pairFit} · comp ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}, tier ${tier}, win rate ${wr}`,
         }
@@ -4776,7 +4790,12 @@ def render_html(
     }
 
     function recMetaHtml(row, name) {
-        const strength = recStrengthLabel(row.fitScore);
+        const copy = tr();
+        const strength = row.leastFit ? copy.leastFitLabel : recStrengthLabel(row.fitScore);
+        const scoreClass = row.leastFit ? 'fit-worst' : '';
+        const scoreLabel = row.leastFit
+            ? copy.leastFitLabel
+            : (currentLang === 'en' ? 'Fit' : '推薦度');
         const confidence = confidenceLabel(row);
         const pairClass = row.pairFitScore >= 0 ? 'good' : 'bad';
         const compClass = row.compositionContribution > 0.001 ? 'good' : (row.compositionContribution < -0.001 ? 'bad' : 'muted');
@@ -4786,7 +4805,7 @@ def render_html(
         return `
             <span class="rec-titleline">
                 <span class="rec-name">${escHtml(name)}</span>
-                <span class="rec-score">${currentLang === 'en' ? 'Fit' : '推薦度'} ${signed(row.fitScore)}</span>
+                <span class="rec-score ${scoreClass}">${scoreLabel} ${signed(row.fitScore)}</span>
                 <span class="rec-badge">${escHtml(strength)}</span>
             </span>
             <span class="rec-detail">
@@ -4795,6 +4814,20 @@ def render_html(
                 <span class="muted">${escHtml(confidence)}</span>
             </span>
         `;
+    }
+
+    function recommendationDisplayRows(recs) {
+        if (!recs.length) return [];
+        const rows = recs.slice(0, REC_LIST_LIMIT).map(row => ({ ...row, leastFit: false }));
+        if (recs.length <= 1) return rows;
+
+        const worst = { ...recs[recs.length - 1], leastFit: true };
+        if (recs.length > REC_LIST_LIMIT) {
+            rows[REC_LIST_LIMIT - 1] = worst;
+        } else {
+            rows[rows.length - 1] = { ...rows[rows.length - 1], leastFit: true };
+        }
+        return rows;
     }
 
     function renderSidePanel() {
@@ -4859,14 +4892,17 @@ def render_html(
             return;
         }
 
-        recList.innerHTML = recs.slice(0, REC_LIST_LIMIT).map((row, idx) => {
+        recList.innerHTML = recommendationDisplayRows(recs).map((row, idx) => {
             const info = DATA.champs[row.id];
             const name = info ? champName(info) : ('#' + row.id);
             const image = info && info.image ? info.image : '';
             const confidence = confidenceLabel(row);
             const meta = recMetaHtml(row, name);
+            const title = row.leastFit
+                ? copy.leastFitRowTitle(name, signed(row.fitScore), signed(row.pairFitScore), signed(row.compositionContribution), confidence)
+                : copy.recRowTitle(name, signed(row.fitScore), signed(row.pairFitScore), signed(row.compositionContribution), confidence);
             return `
-                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(copy.recRowTitle(name, signed(row.fitScore), signed(row.pairFitScore), signed(row.compositionContribution), confidence))}">
+                <button class="rec-row${row.leastFit ? ' least-fit' : ''}" type="button" data-cid="${row.id}" title="${escHtml(title)}">
                     <span class="rec-rank">${idx + 1}</span>
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
                     <span class="rec-main">
