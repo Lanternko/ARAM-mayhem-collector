@@ -365,7 +365,7 @@
     }
     .rec-titleline {
         display: grid;
-        grid-template-columns: minmax(96px, 1fr) auto auto;
+        grid-template-columns: minmax(96px, 1fr) auto;
         align-items: center;
         gap: 8px;
         min-width: 0;
@@ -398,25 +398,19 @@
         gap: 5px;
     }
     .rec-score {
-        color: #f5d780;
+        color: oklch(0.76 0.09 92);
         font-weight: 700;
         justify-self: end;
         white-space: nowrap;
     }
-    .rec-badge {
-        display: inline-flex;
-        align-items: center;
-        justify-self: end;
-        min-height: 18px;
-        padding: 2px 6px;
-        border-radius: 999px;
-        background: rgba(245,215,128,0.11);
-        border: 1px solid rgba(245,215,128,0.22);
-        color: #f5d780;
-        font-size: 10px;
-        font-weight: 700;
-        line-height: 1;
+    .rec-score.fit-top {
+        color: oklch(0.91 0.13 92);
+        text-shadow: 0 0 12px rgba(245, 215, 128, 0.24);
     }
+    .rec-score.fit-strong { color: oklch(0.84 0.12 92); }
+    .rec-score.fit-solid { color: oklch(0.76 0.09 92); }
+    .rec-score.fit-soft { color: oklch(0.68 0.06 92); }
+    .rec-score.fit-floor { color: #9aa0a6; }
     .rec-detail {
         display: grid;
         grid-template-columns: auto auto auto;
@@ -737,6 +731,10 @@
         color: #9aa0a6;
         font-size: 11px;
         font-family: "Noto Serif TC", "Source Han Serif TC", serif;
+    }
+    .augment-strength-meta {
+        display: block;
+        margin: -2px 0 10px;
     }
     .aug-set-summary {
         display: inline-flex;
@@ -1154,8 +1152,7 @@
             gap: 6px;
         }
         .rec-name { flex: 1 1 86px; }
-        .rec-score,
-        .rec-badge { justify-self: auto; }
+        .rec-score { justify-self: auto; }
         .rec-detail {
             display: flex;
             flex-wrap: wrap;
@@ -1366,6 +1363,7 @@
             worst: '最差',
             bestAugments: '最佳增幅裝置',
             worstAugments: '最差增幅裝置',
+            augmentStrengthMeta: '強度綜合參考勝率與選取率',
             weak: '偏弱',
             insufficient: '資料不足',
             rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
@@ -1373,7 +1371,7 @@
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · 系列：' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
-            augScoreNote: (score, pick, peerPick) => `強度分數 ${score}：勝率提升的保守估計；選取率 ${pick}（同類 ${peerPick}）只作參考。`,
+            augScoreNote: (score, pick, peerPick) => `強度分數 ${score}：綜合參考勝率提升與選取率；選取率 ${pick}（同類 ${peerPick}）。`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · 英雄 lift ${lift} · 全體平均 ${avg} · WR ${wr} · ${games}場`,
@@ -1427,6 +1425,7 @@
             worst: 'Worst',
             bestAugments: 'Best Augments',
             worstAugments: 'Worst Augments',
+            augmentStrengthMeta: 'Strength considers both win rate and pick rate',
             weak: 'Weak',
             insufficient: 'Not enough data',
             rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
@@ -1434,7 +1433,7 @@
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games} games${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
-            augScoreNote: (score, pick, peerPick) => `Strength score ${score}: conservative win-rate lift; pick rate ${pick} (peer ${peerPick}) is context, not a penalty.`,
+            augScoreNote: (score, pick, peerPick) => `Strength score ${score}: considers win-rate lift and pick rate; pick rate ${pick} (peer ${peerPick}).`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games} games</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · champion lift ${lift} · global average ${avg} · WR ${wr} · ${games} games`,
@@ -1663,6 +1662,7 @@
                 <span class="cname" id="detail-title-${cid}">${escHtml(champName(info))}</span>
             </div>
             <div class="detail-section">
+                <span class="section-meta augment-strength-meta">${copy.augmentStrengthMeta}</span>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
                         <div class="detail-col-heading">
@@ -1924,17 +1924,12 @@
             );
     }
 
-    function recStrengthLabel(score) {
-        if (currentLang === 'en') {
-            if (score >= 0.05) return 'Excellent fit';
-            if (score >= 0.03) return 'Good fit';
-            if (score >= 0.01) return 'Playable fit';
-            return 'Low edge';
-        }
-        if (score >= 0.05) return '強烈推薦';
-        if (score >= 0.03) return '推薦';
-        if (score >= 0.01) return '可考慮';
-        return '優勢較小';
+    function recScoreClass(score) {
+        if (score >= 0.09) return 'fit-top';
+        if (score >= 0.07) return 'fit-strong';
+        if (score >= 0.05) return 'fit-solid';
+        if (score >= 0.02) return 'fit-soft';
+        return 'fit-floor';
     }
 
     function confidenceLabel(row) {
@@ -1986,7 +1981,7 @@
     }
 
     function recMetaHtml(row, name) {
-        const strength = recStrengthLabel(row.fitScore);
+        const scoreClass = recScoreClass(row.fitScore);
         const confidence = confidenceLabel(row);
         const pairClass = row.pairFitScore >= 0 ? 'good' : 'bad';
         const compClass = row.compositionContribution > 0.001 ? 'good' : (row.compositionContribution < -0.001 ? 'bad' : 'muted');
@@ -1996,8 +1991,7 @@
         return `
             <span class="rec-titleline">
                 <span class="rec-name">${escHtml(name)}</span>
-                <span class="rec-score">${currentLang === 'en' ? 'Fit' : '推薦度'} ${signed(row.fitScore)}</span>
-                <span class="rec-badge">${escHtml(strength)}</span>
+                <span class="rec-score ${scoreClass}">${currentLang === 'en' ? 'Fit' : '推薦度'} ${signed(row.fitScore)}</span>
             </span>
             <span class="rec-detail">
                 <span class="${pairClass}">${escHtml(pairLabel)}</span>
