@@ -15,7 +15,8 @@ Tkinter is not thread-safe — keep this separation strict.
 Usage:
   python scripts/recommend_gui.py \
       --lr-model models/tier2_mayhem/lr_model.pkl \
-      --vocab    models/tier2_mayhem/tier2_checkpoint.pt
+      --vocab    models/tier2_mayhem/tier2_checkpoint.pt \
+      --pair-stats models/pair_synergy_16_10.json
 """
 from __future__ import annotations
 
@@ -35,12 +36,13 @@ from aram_nn.lcu.process import get_credentials
 from aram_nn.recommend import (
     ParsedSession, load_lr, parse_session, session_state_hash, suggest_for_cell,
 )
+from aram_nn.pair_synergy import PairSynergyStats, load_pair_synergy
 
 
 # ---------- Polling thread ----------
 
 def poll_loop(
-    stop_event: threading.Event, q: queue.Queue, model, creds,
+    stop_event: threading.Event, q: queue.Queue, model, pair_stats, creds,
     poll_interval: float, verbose: bool = False,
 ) -> None:
     """Run in background thread.  Pushes messages onto `q`:
@@ -91,7 +93,11 @@ def poll_loop(
                 state = session_state_hash(parsed)
                 if state != last_hash:
                     suggestions = suggest_for_cell(
-                        parsed.my_team_ids, parsed.my_current_id, parsed.bench_ids, model,
+                        parsed.my_team_ids,
+                        parsed.my_current_id,
+                        parsed.bench_ids,
+                        model,
+                        pair_stats,
                     )
                     q.put(("suggestions", parsed, suggestions))
                     last_hash = state
@@ -104,7 +110,13 @@ def poll_loop(
         log(f"[poll] error: {exc!r}")
 
 
-def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval: float = 3.0) -> None:
+def fake_poll_loop(
+    stop_event: threading.Event,
+    q: queue.Queue,
+    model,
+    pair_stats: PairSynergyStats | None,
+    interval: float = 3.0,
+) -> None:
     """Synthetic poll loop for --fake mode.
 
     Emits randomly-generated champ-select states every `interval` seconds so
@@ -136,7 +148,7 @@ def fake_poll_loop(stop_event: threading.Event, q: queue.Queue, model, interval:
             bench_ids=bench,
             bench_enabled=True,
         )
-        suggestions = suggest_for_cell(my_team, my_current, bench, model)
+        suggestions = suggest_for_cell(my_team, my_current, bench, model, pair_stats)
         q.put(("suggestions", parsed, suggestions))
         stop_event.wait(interval)
 
@@ -482,6 +494,9 @@ class RecommenderApp:
 @click.option("--vocab", required=True,
               type=click.Path(exists=True, path_type=Path, dir_okay=False),
               help="Path to tier2_checkpoint.pt or champ_to_idx.json — used for champion vocab.")
+@click.option("--pair-stats", default=Path("models/pair_synergy_16_10.json"),
+              type=click.Path(path_type=Path, dir_okay=False),
+              help="Path to pair synergy JSON from scripts/build_pair_stats.py.")
 @click.option("--poll-interval", default=1.0, show_default=True, type=float,
               help="Seconds between LCU polls while in ChampSelect.")
 @click.option("--fake", is_flag=True, default=False,
@@ -490,11 +505,27 @@ class RecommenderApp:
 @click.option("--verbose", is_flag=True, default=False,
               help="Print per-poll status (phase + session presence) to stdout. "
                    "Useful for diagnosing why a champ-select isn't being detected.")
-def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool, verbose: bool) -> None:
+def main(
+    lr_model: Path,
+    vocab: Path,
+    pair_stats: Path,
+    poll_interval: float,
+    fake: bool,
+    verbose: bool,
+) -> None:
     """Tk GUI for the ARAM champ-select recommender."""
     print(f"[gui] loading model from {lr_model}")
     model = load_lr(lr_model, vocab)
     print(f"[gui] vocab covers {model.n_champs} champions")
+    pair_model = None
+    if pair_stats.exists():
+        pair_model = load_pair_synergy(pair_stats)
+        print(
+            f"[gui] pair synergy rows={len(pair_model.rows):,} "
+            f"patch={pair_model.patch_prefix} min_pair={pair_model.min_pair}"
+        )
+    else:
+        print(f"[gui] WARN: pair stats not found at {pair_stats}; falling back to 30% LR score")
 
     q: queue.Queue = queue.Queue()
     stop_event = threading.Event()
@@ -510,7 +541,7 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool, verbose:
     if fake:
         print("[gui] --fake: synthesizing champ-select states every 3s, no LCU needed")
         thread = threading.Thread(
-            target=fake_poll_loop, args=(stop_event, q, model), daemon=True,
+            target=fake_poll_loop, args=(stop_event, q, model, pair_model), daemon=True,
         )
     else:
         creds = creds_for_icons  # reuse — same credentials work for both
@@ -533,7 +564,7 @@ def main(lr_model: Path, vocab: Path, poll_interval: float, fake: bool, verbose:
             sys.exit(1)
         thread = threading.Thread(
             target=poll_loop,
-            args=(stop_event, q, model, creds, poll_interval, verbose),
+            args=(stop_event, q, model, pair_model, creds, poll_interval, verbose),
             daemon=True,
         )
 

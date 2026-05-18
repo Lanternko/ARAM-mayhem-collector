@@ -5,6 +5,8 @@ Live Client: https://127.0.0.1:2999/   — no auth, self-signed cert (game proce
 """
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
 
 import httpx
@@ -26,6 +28,11 @@ class LCUClient:
             verify=False,
             timeout=5.0,
         )
+        self._debug = _debug_enabled()
+
+    def _log_failure(self, method: str, path: str, detail: str) -> None:
+        if self._debug:
+            print(f"[lcu:http] {method} {path} failed: {detail}", file=sys.stderr)
 
     def get(self, path: str, **params: Any) -> Any:
         """GET path, return parsed JSON or None on any error / non-200."""
@@ -33,8 +40,9 @@ class LCUClient:
             r = self._client.get(path, params=params or None)
             if r.status_code == 200:
                 return r.json()
-        except Exception:
-            pass
+            self._log_failure("GET", path, f"status={r.status_code}")
+        except Exception as exc:
+            self._log_failure("GET", path, repr(exc))
         return None
 
     def get_bytes(self, path: str, **params: Any) -> bytes | None:
@@ -47,8 +55,9 @@ class LCUClient:
             r = self._client.get(path, params=params or None)
             if r.status_code == 200:
                 return r.content
-        except Exception:
-            pass
+            self._log_failure("GET", path, f"status={r.status_code}")
+        except Exception as exc:
+            self._log_failure("GET", path, repr(exc))
         return None
 
     def post(self, path: str, payload: Any = None, **params: Any) -> Any:
@@ -57,8 +66,9 @@ class LCUClient:
             r = self._client.post(path, params=params or None, json=payload)
             if r.status_code == 200:
                 return r.json()
-        except Exception:
-            pass
+            self._log_failure("POST", path, f"status={r.status_code}")
+        except Exception as exc:
+            self._log_failure("POST", path, repr(exc))
         return None
 
     def close(self) -> None:
@@ -73,10 +83,18 @@ class LCUClient:
 
 # ---------- LCU endpoints ----------
 
+def _debug_enabled() -> bool:
+    value = os.environ.get("ARAM_LCU_DEBUG", "")
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def get_gameflow_phase(client: LCUClient) -> str:
     """Return the current gameflow phase string, e.g. 'None', 'Lobby', 'InProgress'."""
-    result = client.get("/lol-gameflow/v1/phase")
-    return result if isinstance(result, str) else "None"
+    for path in ("/lol-gameflow/v1/gameflow-phase", "/lol-gameflow/v1/phase"):
+        result = client.get(path)
+        if isinstance(result, str):
+            return result
+    return "None"
 
 
 def get_current_summoner(client: LCUClient) -> dict | None:

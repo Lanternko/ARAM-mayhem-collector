@@ -134,18 +134,31 @@ def main(data, patches, team, tier_csv, top, min_pair):
             deltas.append(delta)
             pairs_info.append((name_map.get(a, a), n_pair, wr_pair, delta, se))
 
-        if len(deltas) < 2:  # need data for at least 2 of the 4 anchors
-            continue
-        avg_delta = float(np.mean(deltas))
+        anchors_covered = len(deltas)
+        if anchors_covered >= 2:
+            weighted_sum = 0.0
+            weight_sum = 0.0
+            for _, _, _, delta, se in pairs_info:
+                weight = 1.0 / (se * se + 0.0004)
+                weighted_sum += delta * weight
+                weight_sum += weight
+            avg_delta = weighted_sum / weight_sum if weight_sum > 0 else float(np.mean(deltas))
+        elif anchors_covered == 1:
+            avg_delta = 0.5 * deltas[0]
+        else:
+            avg_delta = 0.0
         # Combined SE (pessimistic: sqrt(sum_se^2)/n)
-        combined_se = math.sqrt(sum(se*se for _,_,_,_,se in pairs_info)) / len(deltas)
+        combined_se = (
+            math.sqrt(sum(se*se for _,_,_,_,se in pairs_info)) / anchors_covered
+            if anchors_covered else float("inf")
+        )
 
         cand_rows.append({
             "id": cid,
             "name": name_map.get(cid, f"id_{cid}"),
             "lr_w": lr_w,
             "n_total": total_games,
-            "n_anchors_covered": len(deltas),
+            "n_anchors_covered": anchors_covered,
             "avg_delta_pp": avg_delta * 100,
             "combined_se_pp": combined_se * 100,
             "pairs": pairs_info,
@@ -153,18 +166,18 @@ def main(data, patches, team, tier_csv, top, min_pair):
 
     # Two rankings
     by_universal = sorted(cand_rows, key=lambda r: -r["lr_w"])[:top]
-    by_synergy   = sorted(cand_rows, key=lambda r: -(r["lr_w"] + r["avg_delta_pp"]/100*0.5))[:top]
-    # Hybrid score: lr_w + 0.5 * avg_delta (discounts the noisy synergy by 50%)
+    by_synergy   = sorted(cand_rows, key=lambda r: -(0.7 * r["avg_delta_pp"]/100 + 0.3 * r["lr_w"]))[:top]
+    # Hybrid score: 70% synergy + 30% LR universal strength.
 
     click.echo(f"\n========== A. By UNIVERSAL strength (LR-solo lr_w) ==========")
     click.echo(f"  {'name':<14} {'lr_w':>8} {'n_total':>7} {'avg_synergy':>12} {'±SE':>6}")
     for r in by_universal:
         click.echo(f"  {r['name']:<14} {r['lr_w']:>+8.4f} {r['n_total']:>7} {r['avg_delta_pp']:>+10.2f}pp {r['combined_se_pp']:>5.1f}pp")
 
-    click.echo(f"\n========== B. By HYBRID (lr_w + 0.5 * avg_synergy) ==========")
+    click.echo(f"\n========== B. By HYBRID (0.7 * synergy + 0.3 * lr_w) ==========")
     click.echo(f"  {'name':<14} {'hybrid_score':>10} {'lr_w':>8} {'avg_synergy':>12} {'±SE':>6}")
     for r in by_synergy:
-        score = r['lr_w'] + r['avg_delta_pp']/100*0.5
+        score = 0.7 * r['avg_delta_pp']/100 + 0.3 * r['lr_w']
         click.echo(f"  {r['name']:<14} {score:>+10.4f} {r['lr_w']:>+8.4f} {r['avg_delta_pp']:>+10.2f}pp {r['combined_se_pp']:>5.1f}pp")
 
     # Top-5 detailed breakdown

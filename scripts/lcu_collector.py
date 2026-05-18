@@ -3255,7 +3255,7 @@ def recommend(
                     id_to_name[cid] = name
 
             # Gate directly on the champ-select session endpoint rather than
-            # /lol-gameflow/v1/phase.  Some League client versions don't report
+            # the gameflow phase.  Some League client versions don't report
             # "ChampSelect" for ARAM via the gameflow phase string, but the
             # session endpoint always returns a payload during champ select
             # and 404s outside it — making it the more reliable signal.

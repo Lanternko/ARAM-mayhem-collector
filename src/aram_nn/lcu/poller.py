@@ -4,16 +4,24 @@ Primary path: poll /lol-end-of-game/v1/eog-stats-block every 5 s.
 The EoG block contains all 10 champion IDs (integers) + isWinningTeam,
 so no champion name mapping or in-game port-2999 polling is needed.
 
-Fallback: during InProgress, poll port 2999 and store a pending snapshot
+Fallback: during InProgress, remember the game_id from gameflow session
 in case the user dismisses the EoG screen before we catch it.
+
+LCU WebSocket events are used as wake-up signals only.  The main loop still
+does the REST reads and SQLite writes, so a stuck event stream falls back to
+normal polling.
 """
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty, SimpleQueue
 
 from .client import (
     LCUClient,
@@ -24,6 +32,7 @@ from .client import (
     get_gameflow_session,
     get_match_history,
 )
+from .events import LCUApiEvent, LCUEventListener
 from .process import get_credentials
 
 DEFAULT_QUEUES = {450, 2400}
@@ -45,16 +54,161 @@ CREATE TABLE IF NOT EXISTS games (
 );
 """
 
+_GAMEFLOW_PHASE_URI = "/lol-gameflow/v1/gameflow-phase"
+_GAMEFLOW_SESSION_URI = "/lol-gameflow/v1/session"
+_EOG_EVENT_PREFIXES = ("/lol-end-of-game/", "/lol-pre-end-of-game/")
+
+_ITEM_KEYS = tuple(f"item{idx}" for idx in range(7))
+
+_PARTICIPANT_STAT_ALIASES: dict[str, tuple[str, ...]] = {
+    "gold_earned": ("goldEarned",),
+    "gold_spent": ("goldSpent",),
+    "champ_level": ("champLevel",),
+    "kills": ("kills",),
+    "deaths": ("deaths",),
+    "assists": ("assists",),
+    "largest_killing_spree": ("largestKillingSpree",),
+    "largest_multi_kill": ("largestMultiKill",),
+    "first_blood_kill": ("firstBloodKill",),
+    "first_blood_assist": ("firstBloodAssist",),
+    "total_minions_killed": ("totalMinionsKilled",),
+    "neutral_minions_killed": ("neutralMinionsKilled",),
+    "total_damage_dealt_to_champions": ("totalDamageDealtToChampions",),
+    "physical_damage_dealt_to_champions": ("physicalDamageDealtToChampions",),
+    "magic_damage_dealt_to_champions": ("magicDamageDealtToChampions",),
+    "true_damage_dealt_to_champions": ("trueDamageDealtToChampions",),
+    "total_damage_dealt": ("totalDamageDealt",),
+    "physical_damage_dealt": ("physicalDamageDealt",),
+    "magic_damage_dealt": ("magicDamageDealt",),
+    "true_damage_dealt": ("trueDamageDealt",),
+    "largest_critical_strike": ("largestCriticalStrike",),
+    "damage_dealt_to_turrets": ("damageDealtToTurrets",),
+    "damage_dealt_to_objectives": ("damageDealtToObjectives",),
+    "total_damage_taken": ("totalDamageTaken",),
+    "physical_damage_taken": ("physicalDamageTaken",),
+    "magic_damage_taken": ("magicDamageTaken", "magicalDamageTaken"),
+    "true_damage_taken": ("trueDamageTaken",),
+    "damage_self_mitigated": ("damageSelfMitigated",),
+    "crowd_control_score": ("crowdControlScore",),
+    "time_ccing_others": ("timeCCingOthers",),
+    "total_time_cc_dealt": ("totalTimeCCDealt", "totalTimeCrowdControlDealt"),
+    "total_heal": ("totalHeal",),
+    "total_heals_on_teammates": ("totalHealsOnTeammates", "totalHealOnTeammates"),
+    "total_units_healed": ("totalUnitsHealed",),
+    "total_damage_shielded_on_teammates": (
+        "totalDamageShieldedOnTeammates",
+        "damageShieldedOnTeammates",
+    ),
+    "effective_heal_and_shielding": ("effectiveHealAndShielding",),
+    "turret_kills": ("turretKills",),
+    "inhibitor_kills": ("inhibitorKills", "inhibKills"),
+}
+
+
+@dataclass
+class _CollectorSignals:
+    phase: str | None = None
+    game_id: str | None = None
+    should_fetch_eog: bool = False
+    should_fetch_session: bool = False
+
 
 # ---------- Parsing ----------
 
 def _extract_augments(stats: dict) -> list[int]:
     augments: list[int] = []
     for idx in range(1, 7):
-        value = int(stats.get(f"playerAugment{idx}", 0) or 0)
+        value = _to_int(stats.get(f"playerAugment{idx}", 0)) or 0
         if value > 0:
             augments.append(value)
     return augments
+
+
+def _norm_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _lookup_raw_value(sources: list[dict], aliases: tuple[str, ...]) -> object | None:
+    normalized_aliases = {_norm_key(alias) for alias in aliases}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for alias in aliases:
+            if alias in source and source[alias] is not None:
+                return source[alias]
+        normalized_source = {_norm_key(str(key)): value for key, value in source.items()}
+        for alias in normalized_aliases:
+            if alias in normalized_source and normalized_source[alias] is not None:
+                return normalized_source[alias]
+    return None
+
+
+def _to_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_item_slots(participant: dict, stats: dict) -> list[int]:
+    slots: list[int] = []
+    for key in _ITEM_KEYS:
+        item_id = _to_int(_lookup_raw_value([stats, participant], (key,)))
+        slots.append(item_id if item_id is not None and item_id > 0 else 0)
+    return slots
+
+
+def _extract_selected_stats(participant: dict, stats: dict, challenges: dict) -> dict[str, int]:
+    selected: dict[str, int] = {}
+    for out_key, aliases in _PARTICIPANT_STAT_ALIASES.items():
+        value = _to_int(_lookup_raw_value([stats, challenges, participant], aliases))
+        if value is not None:
+            selected[out_key] = value
+    return selected
+
+
+def _build_participant_record(team_id: int, champion_id: int, raw: dict) -> dict:
+    stats_raw = raw.get("stats") or {}
+    stats = stats_raw if isinstance(stats_raw, dict) else {}
+    challenges_raw = raw.get("challenges") or {}
+    challenges = challenges_raw if isinstance(challenges_raw, dict) else {}
+    item_slots = _extract_item_slots(raw, stats)
+    record = {
+        "teamId": int(team_id),
+        "championId": int(champion_id),
+        "augments": _extract_augments(stats),
+    }
+
+    items = [item_id for item_id in item_slots if item_id > 0]
+    if items:
+        record["items"] = items
+        record["itemSlots"] = item_slots
+
+    selected_stats = _extract_selected_stats(raw, stats, challenges)
+    if selected_stats:
+        record["stats"] = selected_stats
+
+    return record
+
+
+def _participants_payload_has_postgame_stats(payload: object) -> bool:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or "[]")
+        except Exception:
+            return False
+    if not isinstance(payload, list):
+        return False
+    for participant in payload:
+        if not isinstance(participant, dict):
+            continue
+        if participant.get("stats"):
+            return True
+    return False
 
 
 def _build_participant_payload(participants: list[dict]) -> list[dict]:
@@ -64,13 +218,7 @@ def _build_participant_payload(participants: list[dict]) -> list[dict]:
         champion_id = participant.get("championId")
         if team_id not in (100, 200) or champion_id is None:
             continue
-        payload.append(
-            {
-                "teamId": int(team_id),
-                "championId": int(champion_id),
-                "augments": _extract_augments(participant.get("stats") or {}),
-            }
-        )
+        payload.append(_build_participant_record(int(team_id), int(champion_id), participant))
     payload.sort(key=lambda row: (row["teamId"], row["championId"]))
     return payload
 
@@ -81,6 +229,47 @@ def _ensure_games_schema(con: sqlite3.Connection) -> None:
     if "participants_json" not in columns:
         con.execute("ALTER TABLE games ADD COLUMN participants_json TEXT")
     con.commit()
+
+
+def _extract_session_game_id(data: object) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    game_data = data.get("gameData")
+    if not isinstance(game_data, dict):
+        return None
+    game_id = game_data.get("gameId")
+    if game_id is None:
+        return None
+    value = str(game_id)
+    return value if value else None
+
+
+def _drain_lcu_events(event_queue: SimpleQueue[LCUApiEvent]) -> _CollectorSignals:
+    signals = _CollectorSignals()
+    while True:
+        try:
+            event = event_queue.get_nowait()
+        except Empty:
+            break
+
+        if event.uri == _GAMEFLOW_PHASE_URI and isinstance(event.data, str):
+            signals.phase = event.data
+            if event.data == "InProgress":
+                signals.should_fetch_session = True
+        elif event.uri == _GAMEFLOW_SESSION_URI:
+            signals.should_fetch_session = True
+            game_id = _extract_session_game_id(event.data)
+            if game_id:
+                signals.game_id = game_id
+            if isinstance(event.data, dict):
+                phase = event.data.get("phase")
+                if isinstance(phase, str):
+                    signals.phase = phase
+        elif event.uri.startswith(_EOG_EVENT_PREFIXES):
+            signals.should_fetch_eog = True
+
+    return signals
+
 
 def _parse_eog_block(eog: dict, target_queues: set[int], patch: str) -> dict | None:
     """Parse the EoG stats block into a saveable record.
@@ -122,13 +311,7 @@ def _parse_eog_block(eog: dict, target_queues: set[int], patch: str) -> dict | N
             champion_id = player.get("championId")
             if champion_id is None:
                 continue
-            payload.append(
-                {
-                    "teamId": int(tid),
-                    "championId": int(champion_id),
-                    "augments": _extract_augments(player.get("stats") or {}),
-                }
-            )
+            payload.append(_build_participant_record(int(tid), int(champion_id), player))
         if tid == 100:
             blue_champs = champs
             blue_wins   = 1 if winning else 0
@@ -288,6 +471,39 @@ def run_collector(
     # from InProgress and can fetch full detail afterwards via get_game_detail.
     pending_game_id: str | None = None
     last_in_progress_at: float = 0.0   # time.time() of last InProgress poll
+    event_queue: SimpleQueue[LCUApiEvent] = SimpleQueue()
+    wake_event = threading.Event()
+    event_listener: LCUEventListener | None = None
+    event_listener_key: tuple[int, str] | None = None
+
+    def _on_lcu_event(event: LCUApiEvent) -> None:
+        event_queue.put(event)
+        wake_event.set()
+
+    def _stop_event_listener() -> None:
+        nonlocal event_listener, event_listener_key
+        if event_listener is not None:
+            event_listener.stop()
+        event_listener = None
+        event_listener_key = None
+
+    def _ensure_event_listener(creds) -> None:
+        nonlocal event_listener, event_listener_key
+        key = (creds.port, creds.token)
+        if event_listener_key == key and event_listener is not None and event_listener.is_alive():
+            return
+        _stop_event_listener()
+        event_listener = LCUEventListener(
+            creds,
+            on_event=_on_lcu_event,
+            on_status=lambda status: print(f"[lcu:ws] {status}"),
+        )
+        event_listener_key = key
+        event_listener.start()
+
+    def _sleep(seconds: float) -> None:
+        wake_event.wait(max(0.0, seconds))
+        wake_event.clear()
 
     try:
         while True:
@@ -297,8 +513,11 @@ def run_collector(
                     print("[lcu] League client not found — waiting …")
                 puuid = None
                 summoner_fail_streak = 0
-                time.sleep(poll_interval)
+                _stop_event_listener()
+                _sleep(poll_interval)
                 continue
+
+            _ensure_event_listener(creds)
 
             try:
                 with LCUClient(creds) as lcu:
@@ -313,14 +532,22 @@ def run_collector(
                             summoner_fail_streak += 1
                             if summoner_fail_streak >= 3:
                                 print("[lcu] WARNING: cannot resolve summoner — credentials may be stale")
-                            time.sleep(poll_interval)
+                            _sleep(poll_interval)
                             continue
 
                     if not puuid:
-                        time.sleep(poll_interval)
+                        _sleep(poll_interval)
                         continue
 
                     # ── Primary: EoG stats block ─────────────────────────────
+                    signals = _drain_lcu_events(event_queue)
+                    if signals.phase == "InProgress" or signals.should_fetch_eog:
+                        last_in_progress_at = time.time()
+                    if signals.game_id and signals.game_id not in seen_ids:
+                        if pending_game_id != signals.game_id:
+                            pending_game_id = signals.game_id
+                            print(f"[lcu] event: tracking game {pending_game_id}")
+
                     eog = get_eog_stats(lcu)
                     if eog:
                         game_id = str(eog.get("gameId", ""))
@@ -340,12 +567,12 @@ def run_collector(
                             else:
                                 # Wrong queue or too short — mark seen to avoid re-checking
                                 seen_ids.add(game_id)
-                        time.sleep(5)
+                        _sleep(5)
                         continue
 
                     # ── Record game_id during InProgress for fallback ─────────
-                    phase = get_gameflow_phase(lcu)
-                    if phase == "InProgress":
+                    phase = signals.phase or get_gameflow_phase(lcu)
+                    if phase == "InProgress" or signals.should_fetch_session:
                         last_in_progress_at = time.time()
                         if pending_game_id is None:
                             session = get_gameflow_session(lcu)
@@ -355,8 +582,9 @@ def run_collector(
                             if gid and gid not in seen_ids:
                                 pending_game_id = gid
                                 print(f"[lcu] fallback: tracking game {gid}")
-                        time.sleep(5)
-                        continue
+                        if phase == "InProgress":
+                            _sleep(5)
+                            continue
 
                     # ── Fallback: fetch full detail after game ends ───────────
                     if pending_game_id and pending_game_id not in seen_ids:
@@ -379,9 +607,10 @@ def run_collector(
 
             # Poll fast for 2 min after a game ends (so we catch the EoG screen).
             since_game = time.time() - last_in_progress_at
-            time.sleep(5 if since_game < 120 else poll_interval)
+            _sleep(5 if since_game < 120 else poll_interval)
 
     except KeyboardInterrupt:
         print("\n[lcu] stopped by user")
     finally:
+        _stop_event_listener()
         con.close()
