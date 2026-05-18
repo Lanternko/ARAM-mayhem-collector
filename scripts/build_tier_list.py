@@ -71,6 +71,177 @@ AUGMENT_LCB_Z = 1.2815515655446004
 AUGMENT_PICK_LIFT_WEIGHT = 0.0
 AUGMENT_PICK_LIFT_CAP = 3.0
 EMPIRICAL_CHAMPION_SCORES = Path("data/cache/champion_scores_empirical_merged.csv")
+ITEM_MIN_TOTAL_GOLD = 1800
+CATEGORY_PRIOR_DEFAULT = AUGMENT_PRIOR_DEFAULT
+ITEM_STYLE_MIN_GAMES = 150
+ITEM_STYLE_FALLBACK_MIN_GAMES = 100
+AUGMENT_TYPE_MIN_GAMES = 100
+
+ITEM_STYLE_LABELS = {
+    "ap_burn": {"zh": "AP燃燒", "en": "AP burn"},
+    "ap_burst": {"zh": "AP爆發", "en": "AP burst"},
+    "ap_bruiser": {"zh": "法坦", "en": "AP bruiser"},
+    "ap_onhit": {"zh": "混傷命中", "en": "Hybrid on-hit"},
+    "ad_bruiser": {"zh": "AD鬥士", "en": "AD bruiser"},
+    "ad_assassin": {"zh": "物穿刺客", "en": "Lethality assassin"},
+    "ad_poke": {"zh": "AD poke", "en": "AD poke"},
+    "crit": {"zh": "暴擊", "en": "Crit"},
+    "onhit": {"zh": "攻速命中", "en": "AS / on-hit"},
+    "tank": {"zh": "坦克", "en": "Tank"},
+    "support": {"zh": "輔助", "en": "Support"},
+}
+
+AP_BURN_ITEM_KEYWORDS = (
+    "liandry",
+    "blackfire torch",
+    "demonic embrace",
+    "malignance",
+    "pyromancer",
+)
+
+AP_BRUISER_ITEM_KEYWORDS = (
+    "abyssal mask",
+    "banshee",
+    "bloodletter",
+    "cosmic drive",
+    "crown of the shattered queen",
+    "cruelty",
+    "demon king",
+    "everfrost",
+    "innervating locket",
+    "lightning braid",
+    "moonflair",
+    "morellonomicon",
+    "riftmaker",
+    "rod of ages",
+    "rylai",
+    "sanguine gift",
+    "twin mask",
+    "twilight's edge",
+    "zhonya",
+)
+
+AP_BURST_ITEM_KEYWORDS = (
+    "actualizer",
+    "archangel",
+    "cryptbloom",
+    "deathfire",
+    "detonation orb",
+    "flesheater",
+    "hextech gunblade",
+    "hextech rocketbelt",
+    "horizon focus",
+    "luden",
+    "night harvester",
+    "perplexity",
+    "rabadon",
+    "runecarver",
+    "seraph",
+    "shadowflame",
+    "stormsurge",
+    "void staff",
+    "wooglet",
+    "wordless promise",
+)
+
+AP_ONHIT_ITEM_KEYWORDS = (
+    "dusk and dawn",
+    "guinsoo",
+    "lich bane",
+    "nashor",
+    "reality fracture",
+    "reaper's toll",
+    "statikk",
+)
+
+SUPPORT_ITEM_KEYWORDS = (
+    "ardent",
+    "chemtech putrifier",
+    "dawncore",
+    "echoes of helia",
+    "empirean promise",
+    "imperial mandate",
+    "locket",
+    "mikael",
+    "moonstone",
+    "puppeteer",
+    "redemption",
+    "shurelya",
+    "staff of flowing",
+    "sword of blossoming dawn",
+)
+
+AD_POKE_ITEM_KEYWORDS = (
+    "bastionbreaker",
+    "diamond-tipped spear",
+    "hellfire hatchet",
+    "manamune",
+    "muramana",
+    "serylda",
+)
+
+AD_ASSASSIN_ITEM_KEYWORDS = (
+    "axiom arc",
+    "duskblade",
+    "edge of night",
+    "gambler's blade",
+    "hubris",
+    "opportunity",
+    "profane hydra",
+    "prowler",
+    "regicide",
+    "serpent",
+    "spectral cutlass",
+    "umbral glaive",
+    "voltaic",
+    "youmuu",
+)
+
+AD_BRUISER_ITEM_KEYWORDS = (
+    "black cleaver",
+    "bloodthirster",
+    "blade of the ruined king",
+    "chempunk",
+    "death's dance",
+    "divine sunderer",
+    "eclipse",
+    "endless hunger",
+    "experimental hexplate",
+    "frozen mallet",
+    "goredrinker",
+    "guardian angel",
+    "hemomancer",
+    "hullbreaker",
+    "innervating locket",
+    "maw of malmortius",
+    "mercurial scimitar",
+    "overlord",
+    "ravenous hydra",
+    "sanguine blade",
+    "shield of the rakkor",
+    "silvermere dawn",
+    "spear of shojin",
+    "sterak",
+    "stridebreaker",
+    "sundered sky",
+    "titanic hydra",
+    "trinity force",
+)
+
+AUGMENT_TYPE_LABELS = {
+    "damage": {"zh": "傷害", "en": "Damage"},
+    "spell": {"zh": "技能 / AP", "en": "Spell / AP"},
+    "attack": {"zh": "普攻 / AD", "en": "Attack / AD"},
+    "crit": {"zh": "暴擊", "en": "Crit"},
+    "tank": {"zh": "坦克", "en": "Tank"},
+    "sustain": {"zh": "治療護盾", "en": "Heal / Shield"},
+    "mobility": {"zh": "機動進場", "en": "Mobility"},
+    "snowball": {"zh": "雪球", "en": "Snowball"},
+    "economy": {"zh": "經濟", "en": "Economy"},
+    "stacking": {"zh": "疊層成長", "en": "Stacking"},
+    "utility": {"zh": "控制輔助", "en": "Utility"},
+    "auto": {"zh": "自動觸發", "en": "Automated"},
+}
 
 MAYHEM_AUGMENT_SETS = {
     "Archmage": [
@@ -805,6 +976,44 @@ def load_augment_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
     return by_id
 
 
+def load_item_metadata(cache_dir: Path | None = None) -> dict[int, dict]:
+    rows_default = _cached_get_json(
+        f"{CDRAGON_BASE}/v1/items.json",
+        (cache_dir or Path("data/cache")) / "cdragon_items_en_us.json",
+    )
+    rows_zh = _cached_get_json(
+        f"{CDRAGON_BASE.replace('/default', '/zh_tw')}/v1/items.json",
+        (cache_dir or Path("data/cache")) / "cdragon_items_zh_tw.json",
+    )
+    zh_by_id = {
+        int(row["id"]): row
+        for row in rows_zh
+        if isinstance(row, dict) and row.get("id") is not None
+    }
+    out: dict[int, dict] = {}
+    for row in rows_default:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        item_id = int(row["id"])
+        zh_row = zh_by_id.get(item_id, {})
+        icon_path = row.get("iconPath") or zh_row.get("iconPath") or ""
+        price_raw = row.get("priceTotal")
+        if isinstance(price_raw, dict):
+            price_total = int(price_raw.get("amount") or 0)
+        else:
+            price_total = int(price_raw or 0)
+        out[item_id] = {
+            "id": item_id,
+            "name": zh_row.get("name") or row.get("name") or f"#{item_id}",
+            "name_zh": zh_row.get("name") or row.get("name") or f"#{item_id}",
+            "name_en": row.get("name") or zh_row.get("name") or f"#{item_id}",
+            "categories": list(row.get("categories") or zh_row.get("categories") or []),
+            "price_total": price_total,
+            "icon": _icon_url(icon_path) if icon_path else "",
+        }
+    return out
+
+
 def compute_winrates(
     db_path: Path,
     queue_id: int,
@@ -1043,7 +1252,8 @@ def beta_posterior_quantile(q: float, alpha: float, beta: float) -> float:
             pass
     mean = alpha / (alpha + beta)
     var = alpha * beta / ((alpha + beta) ** 2 * (alpha + beta + 1.0))
-    return min(max(mean - AUGMENT_LCB_Z * math.sqrt(max(var, 0.0)), 0.0), 1.0)
+    direction = -1.0 if q <= 0.5 else 1.0
+    return min(max(mean + direction * AUGMENT_LCB_Z * math.sqrt(max(var, 0.0)), 0.0), 1.0)
 
 
 def posterior_wr_summary(wins: int, games: int, baseline: float, prior_strength: float) -> tuple[float, float]:
@@ -1214,6 +1424,396 @@ def build_pick_lift_index(
             "peer_group": group,
         }
     return out
+
+
+def _label_entry(labels: dict[str, dict[str, str]], slug: str) -> dict[str, str]:
+    info = labels.get(slug, {})
+    name_en = info.get("en") or slug
+    name_zh = info.get("zh") or name_en
+    return {
+        "name": name_zh,
+        "name_zh": name_zh,
+        "name_en": name_en,
+        "slug": slug,
+    }
+
+
+def item_style_infos(item: dict | None) -> list[dict[str, str]]:
+    if not item:
+        return []
+    if int(item.get("price_total") or 0) < ITEM_MIN_TOTAL_GOLD:
+        return []
+    categories = set(str(c) for c in item.get("categories") or [])
+    name = f"{item.get('name_en', '')} {item.get('name', '')}".lower()
+    is_spell_item = "SpellDamage" in categories or "ability power" in name
+    is_support = (
+        "HealAndShieldPower" in categories
+        or any(word in name for word in SUPPORT_ITEM_KEYWORDS)
+    )
+    # Use one primary style per completed item.  Multi-tag CDragon items such as
+    # crit+AP Mayhem items otherwise make marksmen look like AP builders just
+    # because their best crit item also carries spell-damage tags.
+    if is_support:
+        slug = "support"
+    elif "CriticalStrike" in categories:
+        slug = "crit"
+    elif is_spell_item:
+        if any(word in name for word in AP_ONHIT_ITEM_KEYWORDS) or (
+            {"OnHit", "AttackSpeed"} & categories and "Damage" not in categories
+        ):
+            slug = "ap_onhit"
+        elif any(word in name for word in AP_BURN_ITEM_KEYWORDS):
+            slug = "ap_burn"
+        elif any(word in name for word in AP_BRUISER_ITEM_KEYWORDS):
+            slug = "ap_bruiser"
+        elif any(word in name for word in AP_BURST_ITEM_KEYWORDS):
+            slug = "ap_burst"
+        elif {"Health", "Armor", "SpellBlock", "MagicResist"} & categories and "MagicPenetration" not in categories:
+            slug = "ap_bruiser"
+        else:
+            slug = "ap_burst"
+    elif {"Damage", "ArmorPenetration", "Lethality"} & categories and (
+        "manamune" in name or "muramana" in name
+    ):
+        slug = "ad_poke"
+    elif {"OnHit", "AttackSpeed"} & categories:
+        slug = "onhit"
+    elif {"Damage", "ArmorPenetration", "Lethality"} & categories:
+        if any(word in name for word in AD_POKE_ITEM_KEYWORDS):
+            slug = "ad_poke"
+        elif any(word in name for word in AD_ASSASSIN_ITEM_KEYWORDS):
+            slug = "ad_assassin"
+        elif any(word in name for word in AD_BRUISER_ITEM_KEYWORDS):
+            slug = "ad_bruiser"
+        elif {"Health", "Armor", "SpellBlock", "MagicResist", "LifeSteal", "SpellVamp", "Tenacity"} & categories:
+            slug = "ad_bruiser"
+        elif {"ArmorPenetration", "Lethality"} & categories and {"Active", "NonbootsMovement", "Slow", "Stealth"} & categories:
+            slug = "ad_assassin"
+        elif {"ArmorPenetration", "Lethality"} & categories and {"AbilityHaste", "CooldownReduction", "Mana"} & categories:
+            slug = "ad_poke"
+        elif {"ArmorPenetration", "Lethality"} & categories:
+            slug = "ad_assassin"
+        else:
+            slug = "ad_bruiser"
+    elif {"Health", "Armor", "SpellBlock", "MagicResist"} & categories:
+        slug = "tank"
+    else:
+        return []
+    return [_label_entry(ITEM_STYLE_LABELS, slug)]
+
+
+_AUGMENT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "damage": (
+        "damage", "burn", "missile", "fire", "lightning", "execute", "explosion",
+        "goldrend", "boomerang", "blade", "laser", "bomb",
+    ),
+    "spell": (
+        "ability power", "spell", "magic damage", "mana", "ultimate", "cooldown",
+        "ability haste", "phenomenal evil", "mind to matter", "bread and",
+    ),
+    "attack": (
+        "attack damage", "basic attack", "basic attacks", "attack speed", "on-hit",
+        "physical damage", "fan the hammer", "light 'em up", "typhoon",
+    ),
+    "crit": ("critical", "crit", "jeweled", "infinity"),
+    "tank": (
+        "health", "armor", "magic resist", "damage reduction", "shield", "steel your heart",
+        "immolate", "goliath", "perseverance",
+    ),
+    "sustain": (
+        "heal", "healing", "shield", "omnivamp", "lifesteal", "first-aid",
+        "windspeaker", "mikael", "all for you", "critical healing",
+    ),
+    "mobility": (
+        "dash", "blink", "movement speed", "move speed", "speed", "haste",
+        "transit", "dive bomber", "clown college",
+    ),
+    "snowball": ("snowball", "snowday", "pinball"),
+    "economy": (
+        "gold", "transmute", "pandora", "donation", "red envelope", "collector",
+        "stats!", "make it rain",
+    ),
+    "stacking": (
+        "stack", "quest", "infinite", "duality", "phenomenal", "hubris",
+        "slap around", "soul eater", "tap dancer", "shrink engine",
+    ),
+    "utility": (
+        "slow", "stun", "root", "crowd control", "ally", "allies", "intervention",
+        "sonata", "polymorph", "buff buddies", "ocean soul",
+    ),
+    "auto": (
+        "automated", "fully automated", "firefox", "frost wraith", "quantum",
+        "self destruct", "prom queen", "ok boomerang",
+    ),
+}
+
+
+_SET_TO_AUGMENT_TYPES = {
+    "archmage": {"spell", "utility"},
+    "dive-bomb": {"mobility", "damage"},
+    "firecracker": {"damage", "attack", "crit"},
+    "fully-automated": {"auto", "damage"},
+    "high-roller": {"economy"},
+    "make-it-rain": {"economy", "damage"},
+    "snowday": {"snowball", "mobility"},
+    "stackosaurus-rex": {"stacking", "tank"},
+    "wee-woo-wee-woo": {"sustain", "utility"},
+}
+
+
+def augment_type_infos(meta: dict | None) -> list[dict[str, str]]:
+    if not meta:
+        return []
+    text = " ".join(
+        str(meta.get(key) or "")
+        for key in ("name", "name_en", "desc", "desc_en", "set", "set_en", "setSlug")
+    ).lower()
+    slugs: set[str] = set()
+    for info in meta.get("sets") or []:
+        slugs.update(_SET_TO_AUGMENT_TYPES.get(str(info.get("slug") or ""), set()))
+    for slug, keywords in _AUGMENT_TYPE_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            slugs.add(slug)
+    return [_label_entry(AUGMENT_TYPE_LABELS, slug) for slug in sorted(slugs)]
+
+
+def estimate_category_prior_strength(rows: list[dict]) -> float:
+    usable = [
+        (
+            int(row["wins"]),
+            int(row["games"]),
+            min(max(float(row["prior_wr"]), 1e-4), 1.0 - 1e-4),
+        )
+        for row in rows
+        if int(row.get("games", 0)) > 0
+    ]
+    if len(usable) < 8 or minimize_scalar is None or betaln is None:
+        return CATEGORY_PRIOR_DEFAULT
+
+    def nll(log_k: float) -> float:
+        k = math.exp(log_k)
+        loss = 0.0
+        for wins, games, prior_wr in usable:
+            alpha = prior_wr * k
+            beta = (1.0 - prior_wr) * k
+            loss -= float(betaln(wins + alpha, games - wins + beta) - betaln(alpha, beta))
+        return loss
+
+    try:
+        result = minimize_scalar(
+            nll,
+            bounds=(math.log(5.0), math.log(5000.0)),
+            method="bounded",
+            options={"xatol": 1e-3},
+        )
+        if result.success:
+            return max(5.0, min(5000.0, math.exp(float(result.x))))
+    except Exception:
+        pass
+    return CATEGORY_PRIOR_DEFAULT
+
+
+def _finalize_category_affinity(
+    cs_games: Counter[tuple[int, str]],
+    cs_wins: Counter[tuple[int, str]],
+    cs_baseline_games: Counter[tuple[int, str]],
+    category_games: Counter[str],
+    category_wins: Counter[str],
+    category_baseline_games: Counter[str],
+    category_names: dict[str, dict[str, str]],
+    *,
+    min_games: int,
+    fallback_min_games: int | None = None,
+    top_n: int = 4,
+    bot_n: int = 4,
+) -> dict[int, dict]:
+    category_avg_lift: dict[str, float] = {}
+    for slug, games in category_games.items():
+        if games > 0:
+            category_avg_lift[slug] = (category_wins[slug] / games) - (category_baseline_games[slug] / games)
+
+    raw_rows: list[dict] = []
+    row_min_games = fallback_min_games or min_games
+    for (cid, slug), games in cs_games.items():
+        if games < row_min_games:
+            continue
+        wins = cs_wins[(cid, slug)]
+        baseline = cs_baseline_games[(cid, slug)] / games
+        avg_lift = category_avg_lift.get(slug, 0.0)
+        prior_wr = min(max(baseline + avg_lift, 1e-4), 1.0 - 1e-4)
+        raw_rows.append({
+            "champion_id": cid,
+            "slug": slug,
+            "games": games,
+            "wins": wins,
+            "baseline_wr": baseline,
+            "avg_lift": avg_lift,
+            "prior_wr": prior_wr,
+            "primary_sample": games >= min_games,
+        })
+
+    prior_strength = estimate_category_prior_strength(raw_rows)
+    by_champ: dict[int, list[dict]] = {}
+    for row in raw_rows:
+        games = int(row["games"])
+        wins = int(row["wins"])
+        prior_wr = float(row["prior_wr"])
+        alpha = wins + prior_wr * prior_strength
+        beta = games - wins + (1.0 - prior_wr) * prior_strength
+        mean_wr = alpha / (alpha + beta)
+        lower_wr = beta_posterior_quantile(AUGMENT_POSTERIOR_Q, alpha, beta)
+        upper_wr = beta_posterior_quantile(1.0 - AUGMENT_POSTERIOR_Q, alpha, beta)
+        slug = str(row["slug"])
+        name_info = category_names.get(slug, _label_entry({}, slug))
+        lift = mean_wr - float(row["baseline_wr"])
+        residual = mean_wr - prior_wr
+        by_champ.setdefault(int(row["champion_id"]), []).append({
+            "name": name_info["name"],
+            "name_zh": name_info["name_zh"],
+            "name_en": name_info["name_en"],
+            "slug": slug,
+            "games": games,
+            "wins": wins,
+            "raw_wr": wins / games if games else prior_wr,
+            "smoothed_wr": mean_wr,
+            "baseline_wr": float(row["baseline_wr"]),
+            "avg_lift": float(row["avg_lift"]),
+            "lift": lift,
+            "residual": residual,
+            "lcb_residual": lower_wr - prior_wr,
+            "ucb_residual": upper_wr - prior_wr,
+            "prior_strength": prior_strength,
+            "primary_sample": bool(row.get("primary_sample")),
+        })
+
+    out: dict[int, dict] = {}
+    for cid, rows in by_champ.items():
+        rows.sort(key=lambda r: (-r["lcb_residual"], -r["residual"], -r["games"], r["name_en"]))
+        eligible = [r for r in rows if r.get("primary_sample")]
+        if not eligible:
+            eligible = rows
+        bot_rows = sorted(eligible, key=lambda r: (r["ucb_residual"], r["residual"], r["games"], r["name_en"]))
+        out[cid] = {"top": eligible[:top_n], "bot": bot_rows[:bot_n], "prior_strength": prior_strength}
+    return out
+
+
+def compute_champ_category_affinities(
+    db_path: Path,
+    queue_id: int,
+    patch_prefix: str | None,
+    aug_meta: dict[int, dict],
+    item_meta: dict[int, dict],
+    champ_records: list[dict],
+    *,
+    min_set_games: int,
+    min_item_games: int,
+    min_augtype_games: int,
+) -> tuple[dict[int, dict], dict[int, dict], dict[int, dict]]:
+    baseline_by_champ = {
+        int(row["champion_id"]): float(row.get("raw_wr", 0.5))
+        for row in champ_records
+    }
+    con = sqlite3.connect(str(db_path))
+    if patch_prefix:
+        rows = list(
+            con.execute(
+                "SELECT blue_wins, participants_json FROM games "
+                "WHERE queue_id=? AND patch LIKE ? AND participants_json IS NOT NULL",
+                (queue_id, f"{patch_prefix}%"),
+            )
+        )
+    else:
+        rows = list(
+            con.execute(
+                "SELECT blue_wins, participants_json FROM games "
+                "WHERE queue_id=? AND participants_json IS NOT NULL",
+                (queue_id,),
+            )
+        )
+    con.close()
+
+    dims = ("sets", "items", "augtypes")
+    cs_games = {dim: Counter() for dim in dims}
+    cs_wins = {dim: Counter() for dim in dims}
+    cs_baseline_games = {dim: Counter() for dim in dims}
+    category_games = {dim: Counter() for dim in dims}
+    category_wins = {dim: Counter() for dim in dims}
+    category_baseline_games = {dim: Counter() for dim in dims}
+    category_names: dict[str, dict[str, dict[str, str]]] = {dim: {} for dim in dims}
+
+    def add(dim: str, cid: int, player_won: int, baseline: float, infos: list[dict[str, str]]) -> None:
+        seen = {str(info.get("slug") or ""): info for info in infos if info.get("slug")}
+        for slug, info in seen.items():
+            key = (cid, slug)
+            cs_games[dim][key] += 1
+            cs_wins[dim][key] += player_won
+            cs_baseline_games[dim][key] += baseline
+            category_games[dim][slug] += 1
+            category_wins[dim][slug] += player_won
+            category_baseline_games[dim][slug] += baseline
+            category_names[dim][slug] = {
+                "name": str(info.get("name") or slug),
+                "name_zh": str(info.get("name_zh") or info.get("name") or slug),
+                "name_en": str(info.get("name_en") or info.get("name") or slug),
+            }
+
+    for blue_wins, participants_json in rows:
+        if not participants_json:
+            continue
+        blue_won = bool(blue_wins)
+        for participant in json.loads(participants_json):
+            cid = int(participant.get("championId", 0) or 0)
+            team_id = int(participant.get("teamId", 0) or 0)
+            if cid <= 0 or team_id not in (100, 200):
+                continue
+            baseline = baseline_by_champ.get(cid, 0.5)
+            player_won = 1 if (team_id == 100) == blue_won else 0
+            set_infos: list[dict[str, str]] = []
+            aug_type_infos: list[dict[str, str]] = []
+            for augment_id in participant.get("augments") or []:
+                meta = aug_meta.get(int(augment_id))
+                if not meta:
+                    continue
+                set_infos.extend(meta.get("sets") or [])
+                aug_type_infos.extend(augment_type_infos(meta))
+            item_style_weights: Counter[str] = Counter()
+            item_style_by_slug: dict[str, dict[str, str]] = {}
+            for item_id in participant.get("items") or participant.get("itemSlots") or []:
+                item = item_meta.get(int(item_id))
+                for info in item_style_infos(item):
+                    slug = str(info.get("slug") or "")
+                    if not slug:
+                        continue
+                    item_style_weights[slug] += max(int((item or {}).get("price_total") or 0), 1)
+                    item_style_by_slug[slug] = info
+            item_infos: list[dict[str, str]] = []
+            if item_style_weights:
+                primary_slug = sorted(
+                    item_style_weights,
+                    key=lambda slug: (-item_style_weights[slug], slug),
+                )[0]
+                item_infos = [item_style_by_slug[primary_slug]]
+            add("sets", cid, player_won, baseline, set_infos)
+            add("items", cid, player_won, baseline, item_infos)
+            add("augtypes", cid, player_won, baseline, aug_type_infos)
+
+    return (
+        _finalize_category_affinity(
+            cs_games["sets"], cs_wins["sets"], cs_baseline_games["sets"],
+            category_games["sets"], category_wins["sets"], category_baseline_games["sets"],
+            category_names["sets"], min_games=min_set_games,
+        ),
+        _finalize_category_affinity(
+            cs_games["items"], cs_wins["items"], cs_baseline_games["items"],
+            category_games["items"], category_wins["items"], category_baseline_games["items"],
+            category_names["items"], min_games=min_item_games, fallback_min_games=ITEM_STYLE_FALLBACK_MIN_GAMES,
+        ),
+        _finalize_category_affinity(
+            cs_games["augtypes"], cs_wins["augtypes"], cs_baseline_games["augtypes"],
+            category_games["augtypes"], category_wins["augtypes"], category_baseline_games["augtypes"],
+            category_names["augtypes"], min_games=min_augtype_games,
+        ),
+    )
 
 
 def build_champ_augment_picks(
@@ -1546,6 +2146,8 @@ def render_html(
     champ_meta: dict[int, dict],
     champ_picks: dict[int, dict],
     champ_sets: dict[int, dict],
+    champ_item_styles: dict[int, dict],
+    champ_augment_types: dict[int, dict],
     champ_synergy: dict[int, list[dict]],
     aug_meta: dict[int, dict],
     *,
@@ -1595,15 +2197,17 @@ def render_html(
 
     def _pack_set(r: dict) -> dict:
         return {
-            "name": r["set"],
-            "name_zh": r.get("set_zh", r["set"]),
-            "name_en": r.get("set_en", r["set"]),
+            "name": r.get("set", r.get("name", r["slug"])),
+            "name_zh": r.get("set_zh", r.get("name_zh", r.get("set", r.get("name", r["slug"])))),
+            "name_en": r.get("set_en", r.get("name_en", r.get("set", r.get("name", r["slug"])))),
             "slug": r["slug"],
             "g": r["games"],
             "wr": round(r["smoothed_wr"], 4),
             "lift": round(r["lift"], 4),
             "avg": round(r["avg_lift"], 4),
             "res": round(r["residual"], 4),
+            "score": round(r.get("lcb_residual", r["residual"]), 4),
+            "badScore": round(r.get("ucb_residual", r["residual"]), 4),
         }
 
     visible_cids = [int(r["champion_id"]) for r in records]
@@ -1646,6 +2250,14 @@ def render_html(
             "sets": {
                 "top": [_pack_set(r) for r in champ_sets.get(cid, {}).get("top", [])],
                 "bot": [_pack_set(r) for r in champ_sets.get(cid, {}).get("bot", [])],
+            },
+            "items": {
+                "top": [_pack_set(r) for r in champ_item_styles.get(cid, {}).get("top", [])],
+                "bot": [_pack_set(r) for r in champ_item_styles.get(cid, {}).get("bot", [])],
+            },
+            "augTypes": {
+                "top": [_pack_set(r) for r in champ_augment_types.get(cid, {}).get("top", [])],
+                "bot": [_pack_set(r) for r in champ_augment_types.get(cid, {}).get("bot", [])],
             },
             "pairs": pairs,
         }
@@ -2377,6 +2989,47 @@ def render_html(
         overflow: hidden;
         text-overflow: ellipsis;
     }
+    .fit-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+        gap: 8px;
+    }
+    .fit-card {
+        background: #11151d;
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 8px;
+        padding: 8px;
+        min-width: 0;
+    }
+    .fit-card.good {
+        border-color: rgba(107, 209, 107, 0.22);
+        background: linear-gradient(180deg, rgba(107, 209, 107, 0.08), #11151d 42%);
+    }
+    .fit-card.bad {
+        border-color: rgba(255, 107, 107, 0.22);
+        background: linear-gradient(180deg, rgba(255, 107, 107, 0.07), #11151d 42%);
+    }
+    .fit-name {
+        color: #e6e8eb;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .fit-score {
+        margin-top: 4px;
+        font-size: 12px;
+        font-weight: 700;
+    }
+    .fit-card.good .fit-score { color: #6bd16b; }
+    .fit-card.bad .fit-score { color: #ff8b8b; }
+    .fit-meta {
+        margin-top: 2px;
+        color: #9aa0a6;
+        font-size: 10px;
+        line-height: 1.35;
+    }
     .detail-cols {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -2534,6 +3187,11 @@ def render_html(
         font-size: 10px;
         border-top: 1px solid rgba(255,255,255,0.08);
         padding-top: 4px;
+    }
+    .aug-tip-score {
+        color: #d4dae4;
+        font-size: 10px;
+        margin-top: 4px;
     }
     .aug-tip-set {
         color: #8fd8f4;
@@ -3171,15 +3829,22 @@ def render_html(
             pairSectionTitle: '搭檔組合',
             pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
             setSectionTitle: 'Augment 系列相性',
-            setSectionMeta: '依照英雄和系列的適配度排名，不是單純看系列整體強度',
+            setSectionMeta: '保守分數；負值代表相對較好，但未達正訊號',
+            itemSectionTitle: '裝備取向',
+            itemSectionMeta: '每場只算主出裝；負值仍可能是相對最佳',
+            augTypeSectionTitle: 'Augment 類型取向',
+            augTypeSectionMeta: '語意分組，同一套保守 residual 分數',
+            relativeBest: '相對最佳',
             best: '最佳',
             worst: '最差',
+            weak: '偏弱',
             insufficient: '資料不足',
             rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
             augSetLabel: '系列',
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · 系列：' + setName : ''} · WR ${wr} · ${games}場${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}，勝率 ${wr}，相對基準 ${lift}，樣本 ${games} 場${desc ? '，' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games}場`,
+            augScoreNote: (score, pick, peerPick) => `強度分數 ${score}：勝率提升的保守估計；選取率 ${pick}（同類 ${peerPick}）只作參考。`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games}場`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games}場</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · 英雄 lift ${lift} · 全體平均 ${avg} · WR ${wr} · ${games}場`,
@@ -3225,15 +3890,22 @@ def render_html(
             pairSectionTitle: 'Pairings',
             pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
             setSectionTitle: 'Augment Sets',
-            setSectionMeta: 'Ranked by champion-set fit, not raw set strength',
+            setSectionMeta: 'Conservative score; negative can still be relative-best',
+            itemSectionTitle: 'Item Styles',
+            itemSectionMeta: 'One main build per game; negative can still be relative-best',
+            augTypeSectionTitle: 'Augment Types',
+            augTypeSectionMeta: 'Semantic groups with the same conservative residual score',
+            relativeBest: 'Relative Best',
             best: 'Best',
             worst: 'Worst',
+            weak: 'Weak',
             insufficient: 'Not enough data',
             rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
             augSetLabel: 'Set',
             augTitle: (name, setName, wr, games, desc) => `${name}${setName ? ' · Set: ' + setName : ''} · WR ${wr} · ${games} games${desc ? ' — ' + desc : ''}`,
             augAria: (name, wr, lift, games, desc) => `${name}, win rate ${wr}, versus baseline ${lift}, sample ${games} games${desc ? ', ' + desc : ''}`,
             augTipStat: (wr, lift, games) => `WR ${wr} · ${lift} · ${games} games`,
+            augScoreNote: (score, pick, peerPick) => `Strength score ${score}: conservative win-rate lift; pick rate ${pick} (peer ${peerPick}) is context, not a penalty.`,
             mateTitle: (name, wr, expectedText, lift, zText, games) => `${name} · WR ${wr}${expectedText} · residual ${lift} · z ${zText} · ${games} games`,
             mateMetaHtml: (lift, zText, games) => `${lift}<span class="mmeta-label"> residual</span><span class="mmeta-z"> · z ${zText}</span><span class="mmeta-games"> · ${games} games</span>`,
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · champion lift ${lift} · global average ${avg} · WR ${wr} · ${games} games`,
@@ -3307,12 +3979,19 @@ def render_html(
         const setName = augSetName(aug);
         const copy = tr();
         const titleAttr = copy.augTitle(name, setName, pct(entry.wr), entry.g, desc);
+        const scoreValue = entry.score !== undefined ? entry.score : entry.lift;
+        const scoreNote = copy.augScoreNote(
+            signed(scoreValue),
+            pct(entry.pick || 0),
+            pct(entry.peerPick || 0)
+        );
         const tooltip = `
             <div class="aug-tip">
                 <div class="aug-tip-name">${escHtml(name)}</div>
                 ${setName ? `<div class="aug-tip-set">${copy.augSetLabel}: ${escHtml(setName)}</div>` : ''}
                 ${desc ? `<div class="aug-tip-desc">${escHtml(desc)}</div>` : ''}
                 <div class="aug-tip-stat">${copy.augTipStat(pct(entry.wr), signed(entry.lift), entry.g)}</div>
+                <div class="aug-tip-score">${escHtml(scoreNote)}</div>
             </div>
         `;
         // Augment card carries its own ARIA semantics so screen readers and
@@ -3365,6 +4044,8 @@ def render_html(
         const setInfo = info.sets || {};
         const setTop = setInfo.top || [];
         const setBot = setInfo.bot || [];
+        const itemInfo = info.items || {};
+        const augTypeInfo = info.augTypes || {};
         const topRows = RARITIES.map(r => buildRarityRow(top[r.key], 'good', r)).join('');
         const botRows = RARITIES.map(r => buildRarityRow(bot[r.key], 'bad', r)).join('');
         const pairs = info.pairs || [];
@@ -3395,16 +4076,59 @@ def render_html(
         };
         const buildSetSummary = (rows, bad = false) => {
             const visibleSets = rows
-                .filter(entry => bad ? entry.res <= -SET_RESIDUAL_THRESHOLD : entry.res >= SET_RESIDUAL_THRESHOLD)
+                .filter(entry => {
+                    const metric = bad ? (entry.badScore ?? entry.res) : (entry.score ?? entry.res);
+                    return bad ? metric <= -SET_RESIDUAL_THRESHOLD : metric >= SET_RESIDUAL_THRESHOLD;
+                })
                 .slice(0, 3);
             if (!visibleSets.length) return '';
             const titleAttr = visibleSets.map(entry => {
                 const name = setEntryName(entry);
-                return `${name} residual ${signed(entry.res)}, lift ${signed(entry.lift)}, set avg ${signed(entry.avg)}, WR ${pct(entry.wr)}, ${entry.g} games`;
+                const metric = bad ? (entry.badScore ?? entry.res) : (entry.score ?? entry.res);
+                return `${name} score ${signed(metric)}, residual ${signed(entry.res)}, lift ${signed(entry.lift)}, set avg ${signed(entry.avg)}, WR ${pct(entry.wr)}, ${entry.g} games`;
             }).join('\\n');
             return `
                 <div class="aug-set-summary ${bad ? 'bad' : ''}" title="${escHtml(titleAttr)}">
                     ${visibleSets.map(entry => `<span class="sum-item">${escHtml(setEntryName(entry))}</span>`).join('')}
+                </div>
+            `;
+        };
+        const buildFitCard = (entry, kind) => {
+            const name = setEntryName(entry);
+            const score = kind === 'bad' ? (entry.badScore ?? entry.res) : (entry.score ?? entry.res);
+            const titleAttr = copy.setTitle(name, signed(entry.res), signed(entry.lift), signed(entry.avg), pct(entry.wr), entry.g);
+            return `
+                <div class="fit-card ${kind}" title="${escHtml(titleAttr)}">
+                    <div class="fit-name">${escHtml(name)}</div>
+                    <div class="fit-score">${signed(score)}</div>
+                    <div class="fit-meta">${copy.setMeta(signed(entry.lift), signed(entry.avg), pct(entry.wr), entry.g)}</div>
+                </div>
+            `;
+        };
+        const buildFitList = (rows, kind) => {
+            if (!rows || !rows.length) return `<div class="mate-list empty-list">${copy.insufficient}</div>`;
+            return `<div class="fit-list">${rows.slice(0, 4).map(entry => buildFitCard(entry, kind)).join('')}</div>`;
+        };
+        const buildAffinitySection = (title, meta, payload) => {
+            const bestRows = (payload && payload.top) || [];
+            const weakRows = (payload && payload.bot) || [];
+            if (!bestRows.length && !weakRows.length) return '';
+            return `
+                <div class="detail-section">
+                    <div class="detail-section-head">
+                        <h3>${title}</h3>
+                        <span class="section-meta">${meta}</span>
+                    </div>
+                    <div class="detail-cols">
+                        <div class="detail-col best">
+                            <h3>${copy.relativeBest}</h3>
+                            ${buildFitList(bestRows, 'good')}
+                        </div>
+                        <div class="detail-col worst">
+                            <h3>${copy.weak}</h3>
+                            ${buildFitList(weakRows, 'bad')}
+                        </div>
+                    </div>
                 </div>
             `;
         };
@@ -3435,6 +4159,8 @@ def render_html(
                     </div>
                 </div>
             </div>
+            ${buildAffinitySection(copy.itemSectionTitle, copy.itemSectionMeta, itemInfo)}
+            ${buildAffinitySection(copy.augTypeSectionTitle, copy.augTypeSectionMeta, augTypeInfo)}
             <div class="detail-section">
                 <div class="detail-section-head">
                     <h3>${copy.pairSectionTitle}</h3>
@@ -4101,6 +4827,8 @@ def main(
         f"[tierlist] augment catalogue: {len(aug_meta)} entries "
         f"({desc_n} with zh-TW description)"
     )
+    item_meta = load_item_metadata(cache_dir=Path("data/cache"))
+    click.echo(f"[tierlist] item catalogue: {len(item_meta)} entries")
 
     champ_records, champ_aug, champ_pairs = compute_winrates(db, queue_id, patch_prefix)
     total_games = sum(r["games"] for r in champ_records) // 10
@@ -4128,17 +4856,31 @@ def main(
         f"[tierlist] {len(picks)} champions have >= 1 rarity-bucketed pair "
         f"(games >= {min_pair_games})"
     )
-    set_affinity = compute_champ_set_affinity(
+    affinity_min_games = max(min_pair_games * 3, 45)
+    item_style_min_games = max(affinity_min_games, ITEM_STYLE_MIN_GAMES)
+    augment_type_min_games = max(affinity_min_games, AUGMENT_TYPE_MIN_GAMES)
+    set_affinity, item_style_affinity, augment_type_affinity = compute_champ_category_affinities(
         db,
         queue_id,
         patch_prefix,
         aug_meta,
+        item_meta,
         champ_records,
-        min_games_per_set=max(min_pair_games * 3, 45),
+        min_set_games=affinity_min_games,
+        min_item_games=item_style_min_games,
+        min_augtype_games=augment_type_min_games,
     )
     click.echo(
         f"[tierlist] {len(set_affinity)} champions have >= 1 augment-set affinity row "
-        f"(games >= {max(min_pair_games * 3, 45)})"
+        f"(games >= {affinity_min_games})"
+    )
+    click.echo(
+        f"[tierlist] {len(item_style_affinity)} champions have >= 1 item-style affinity row "
+        f"(games >= {item_style_min_games})"
+    )
+    click.echo(
+        f"[tierlist] {len(augment_type_affinity)} champions have >= 1 augment-type affinity row "
+        f"(games >= {augment_type_min_games})"
     )
     synergy = build_champ_synergy_index(
         champ_pairs,
@@ -4180,6 +4922,8 @@ def main(
         champ_meta,
         picks,
         set_affinity,
+        item_style_affinity,
+        augment_type_affinity,
         synergy,
         aug_meta,
         queue_id=queue_id,
