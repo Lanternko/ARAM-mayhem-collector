@@ -71,6 +71,7 @@ AUGMENT_LCB_Z = 1.2815515655446004
 AUGMENT_PICK_LIFT_WEIGHT = 0.0
 AUGMENT_PICK_LIFT_CAP = 3.0
 EMPIRICAL_CHAMPION_SCORES = Path("data/cache/champion_scores_empirical_merged.csv")
+SEMANTIC_CHAMPION_SCORES = Path("data/cache/champion_semantic_scores.csv")
 ITEM_MIN_TOTAL_GOLD = 1800
 CATEGORY_PRIOR_DEFAULT = AUGMENT_PRIOR_DEFAULT
 ITEM_STYLE_MIN_GAMES = 150
@@ -241,6 +242,101 @@ AUGMENT_TYPE_LABELS = {
     "stacking": {"zh": "疊層成長", "en": "Stacking"},
     "utility": {"zh": "控制輔助", "en": "Utility"},
     "auto": {"zh": "自動觸發", "en": "Automated"},
+}
+
+COMPOSITION_SCORE_COLUMNS = (
+    "wave_clear_score",
+    "cc_score",
+    "engage_score",
+    "damage_score",
+    "poke_score",
+    "sustain_score",
+    "frontline_score",
+)
+COMPOSITION_LACK_THRESHOLDS = {
+    "wave": 3.0,
+    "cc": 3.0,
+    "engage": 2.2,
+    "damage": 5.5,
+    "poke": 2.0,
+    "sustain": 1.5,
+    "front": 1.8,
+}
+RECOMMENDATION_COMPOSITION_WEIGHT = 0.25
+RECOMMENDATION_COMPOSITION_CLAMP = 0.05
+RECOMMENDATION_COMPOSITION_TABLE_WEIGHTS = {
+    "ad_front": 0.55,
+    "poke_front": 0.30,
+    "wave_engage": 0.15,
+    "all_lacks": 0.15,
+    "mage_ad": 0.20,
+    "marksman_ad": 0.20,
+}
+RECOMMENDATION_COMPOSITION_TABLES = {
+    "ad_front": {
+        "0 front|<35% AD": -0.0393,
+        "0 front|35-45% AD": 0.0181,
+        "0 front|45-55% AD": -0.0189,
+        "0 front|55-65% AD": -0.0201,
+        "0 front|>=65% AD": -0.0383,
+        "1 front|<35% AD": -0.0019,
+        "1 front|35-45% AD": 0.0187,
+        "1 front|45-55% AD": 0.0149,
+        "1 front|55-65% AD": 0.0185,
+        "1 front|>=65% AD": -0.0037,
+        "2+ front|<35% AD": -0.0146,
+        "2+ front|35-45% AD": 0.0160,
+        "2+ front|45-55% AD": 0.0097,
+        "2+ front|55-65% AD": -0.0148,
+        "2+ front|>=65% AD": -0.0388,
+    },
+    "poke_front": {
+        "0 front|poke lack": -0.0447,
+        "0 front|poke ok": -0.0164,
+        "1 front|poke lack": 0.0228,
+        "1 front|poke ok": 0.0102,
+        "2+ front|poke lack": -0.0497,
+        "2+ front|poke ok": -0.0006,
+    },
+    "wave_engage": {
+        "wave lack|engage lack": -0.0160,
+        "wave lack|engage ok": -0.0105,
+        "wave ok|engage lack": 0.0073,
+        "wave ok|engage ok": 0.0002,
+    },
+    "all_lacks": {
+        "0": 0.0026,
+        "1": -0.0053,
+        "2+": -0.0119,
+    },
+    "mage_ad": {
+        "0|>=65% AD": -0.0499,
+        "1|35-45% AD": 0.0006,
+        "1|45-55% AD": -0.0118,
+        "1|55-65% AD": -0.0042,
+        "1|>=65% AD": -0.0285,
+        "2+|<35% AD": -0.0135,
+        "2+|35-45% AD": 0.0187,
+        "2+|45-55% AD": 0.0110,
+        "2+|55-65% AD": 0.0013,
+        "2+|>=65% AD": -0.0099,
+    },
+    "marksman_ad": {
+        "0|<35% AD": -0.0266,
+        "0|35-45% AD": -0.0141,
+        "0|45-55% AD": -0.0037,
+        "0|55-65% AD": -0.0354,
+        "1|<35% AD": -0.0030,
+        "1|35-45% AD": 0.0267,
+        "1|45-55% AD": 0.0176,
+        "1|55-65% AD": -0.0063,
+        "1|>=65% AD": -0.0153,
+        "2+|<35% AD": -0.0318,
+        "2+|35-45% AD": 0.0188,
+        "2+|45-55% AD": -0.0016,
+        "2+|55-65% AD": 0.0071,
+        "2+|>=65% AD": -0.0299,
+    },
 }
 
 MAYHEM_AUGMENT_SETS = {
@@ -1290,23 +1386,50 @@ def _damage_bucket(row: dict[str, str] | None, role: str) -> str:
 def load_champion_pick_profiles(
     champ_meta: dict[int, dict],
     scores_path: Path = EMPIRICAL_CHAMPION_SCORES,
-) -> dict[int, dict[str, str]]:
+) -> dict[int, dict[str, object]]:
     score_rows: dict[int, dict[str, str]] = {}
-    if scores_path.exists():
-        with scores_path.open(encoding="utf-8-sig", newline="") as f:
+    source_path = scores_path if scores_path.exists() else SEMANTIC_CHAMPION_SCORES
+    if source_path.exists():
+        with source_path.open(encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
                 try:
                     score_rows[int(row["champion_id"])] = row
                 except (KeyError, TypeError, ValueError):
                     continue
 
-    profiles: dict[int, dict[str, str]] = {}
+    profiles: dict[int, dict[str, object]] = {}
     for cid, meta in champ_meta.items():
         tags = list(meta.get("tags") or [])
         role = tags[0] if tags else "Unknown"
+        row = score_rows.get(int(cid))
+        damage_per_min = _safe_float(row.get("empirical_damage_per_min")) if row else 0.0
+        physical_ratio = _safe_float(row.get("empirical_physical_damage_ratio")) if row else 0.0
+        magic_ratio = _safe_float(row.get("empirical_magic_damage_ratio")) if row else 0.0
+        true_ratio = _safe_float(row.get("empirical_true_damage_ratio")) if row else 0.0
+        physical_dpm = damage_per_min * physical_ratio
+        magic_dpm = damage_per_min * magic_ratio
+        true_dpm = damage_per_min * true_ratio
+        damage_bucket = _damage_bucket(row, role)
+        if physical_dpm + magic_dpm <= 0:
+            if damage_bucket == "physical":
+                physical_dpm = 1.0
+            elif damage_bucket == "magic":
+                magic_dpm = 1.0
+            else:
+                physical_dpm = magic_dpm = 0.5
         profiles[int(cid)] = {
             "role": role,
-            "damage": _damage_bucket(score_rows.get(int(cid)), role),
+            "damage": damage_bucket,
+            "physical_dpm": physical_dpm,
+            "magic_dpm": magic_dpm,
+            "true_dpm": true_dpm,
+            "wave": _safe_float(row.get("wave_clear_score")) if row else 0.0,
+            "cc": _safe_float(row.get("cc_score")) if row else 0.0,
+            "engage": _safe_float(row.get("engage_score")) if row else 0.0,
+            "damage_score": _safe_float(row.get("damage_score")) if row else 0.0,
+            "poke": _safe_float(row.get("poke_score")) if row else 0.0,
+            "sustain": _safe_float(row.get("sustain_score")) if row else 0.0,
+            "front": _safe_float(row.get("frontline_score")) if row else 0.0,
         }
     return profiles
 
@@ -1344,7 +1467,7 @@ def augment_peer_scope(meta: dict | None) -> str:
     return "role"
 
 
-def _profile_group(cid: int, profiles: dict[int, dict[str, str]], scope: str) -> str:
+def _profile_group(cid: int, profiles: dict[int, dict[str, object]], scope: str) -> str:
     profile = profiles.get(cid, {})
     role = profile.get("role") or "Unknown"
     if scope == "role_damage":
@@ -1355,7 +1478,7 @@ def _profile_group(cid: int, profiles: dict[int, dict[str, str]], scope: str) ->
 def build_pick_lift_index(
     champ_aug: list[dict],
     aug_meta: dict[int, dict],
-    profiles: dict[int, dict[str, str]],
+    profiles: dict[int, dict[str, object]],
 ) -> dict[tuple[int, int], dict[str, float | str]]:
     champ_rarity_totals: Counter[tuple[int, str]] = Counter()
     global_totals: Counter[str] = Counter()
@@ -1819,7 +1942,7 @@ def compute_champ_category_affinities(
 def build_champ_augment_picks(
     champ_aug: list[dict],
     aug_meta: dict[int, dict],
-    profiles: dict[int, dict[str, str]],
+    profiles: dict[int, dict[str, object]],
     *,
     min_games_per_pair: int,
     top_n: int,
@@ -2144,6 +2267,7 @@ def build_champ_synergy_index(
 def render_html(
     records: list[dict],
     champ_meta: dict[int, dict],
+    champ_profiles: dict[int, dict[str, object]],
     champ_picks: dict[int, dict],
     champ_sets: dict[int, dict],
     champ_item_styles: dict[int, dict],
@@ -2210,6 +2334,20 @@ def render_html(
             "badScore": round(r.get("ucb_residual", r["residual"]), 4),
         }
 
+    def _pack_comp(profile: dict[str, object]) -> dict:
+        return {
+            "phys": round(float(profile.get("physical_dpm") or 0.0), 3),
+            "magic": round(float(profile.get("magic_dpm") or 0.0), 3),
+            "true": round(float(profile.get("true_dpm") or 0.0), 3),
+            "wave": round(float(profile.get("wave") or 0.0), 3),
+            "cc": round(float(profile.get("cc") or 0.0), 3),
+            "engage": round(float(profile.get("engage") or 0.0), 3),
+            "damage": round(float(profile.get("damage_score") or 0.0), 3),
+            "poke": round(float(profile.get("poke") or 0.0), 3),
+            "sustain": round(float(profile.get("sustain") or 0.0), 3),
+            "front": round(float(profile.get("front") or 0.0), 3),
+        }
+
     visible_cids = [int(r["champion_id"]) for r in records]
     visible_cid_set = set(visible_cids)
     for cid in visible_cids:
@@ -2260,6 +2398,7 @@ def render_html(
                 "bot": [_pack_set(r) for r in champ_augment_types.get(cid, {}).get("bot", [])],
             },
             "pairs": pairs,
+            "comp": _pack_comp(champ_profiles.get(cid, {})),
         }
     js_augs = {
         str(aid): {
@@ -2639,6 +2778,8 @@ def render_html(
         background: #2a3142;
     }
     .rec-main {
+        display: grid;
+        gap: 4px;
         min-width: 0;
     }
     .rec-name {
@@ -2652,16 +2793,53 @@ def render_html(
         text-overflow: ellipsis;
     }
     .rec-meta {
-        display: block;
+        display: grid;
+        gap: 3px;
         margin-top: 2px;
         color: #9aa0a6;
         font-size: 11px;
         line-height: 1.35;
         font-variant-numeric: tabular-nums;
     }
+    .rec-scoreline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px;
+    }
+    .rec-score {
+        color: #f5d780;
+        font-weight: 700;
+    }
+    .rec-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 18px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(245,215,128,0.11);
+        border: 1px solid rgba(245,215,128,0.22);
+        color: #f5d780;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1;
+    }
+    .rec-detail {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+    .rec-detail .good,
     .rec-meta .z {
         color: #6bd16b;
         font-weight: 700;
+    }
+    .rec-detail .bad {
+        color: #ff8a8a;
+        font-weight: 700;
+    }
+    .rec-detail .muted {
+        color: #9aa0a6;
     }
     /* Empty filter state — surfaces when role × search yields zero champs.
        Mincho italic to match the caption typography elsewhere, deliberately
@@ -2988,6 +3166,29 @@ def render_html(
     .aug-set-summary .sum-item {
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    .fit-chip-list {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-height: 24px;
+    }
+    .fit-chip {
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: rgba(107, 209, 107, 0.10);
+        border: 1px solid rgba(107, 209, 107, 0.25);
+        color: #b9f6b9;
+        font-size: 11px;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: help;
     }
     .fit-list {
         display: grid;
@@ -3497,6 +3698,13 @@ def render_html(
         "augs": js_augs,
         "min_games_per_pair": min_games_per_pair,
         "min_synergy_games": min_synergy_games,
+        "recommendation_composition": {
+            "weight": RECOMMENDATION_COMPOSITION_WEIGHT,
+            "clamp": RECOMMENDATION_COMPOSITION_CLAMP,
+            "lack_thresholds": COMPOSITION_LACK_THRESHOLDS,
+            "table_weights": RECOMMENDATION_COMPOSITION_TABLE_WEIGHTS,
+            "tables": RECOMMENDATION_COMPOSITION_TABLES,
+        },
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
@@ -3760,9 +3968,8 @@ def render_html(
         "<div>"
         "<h2 id='side-title'>推薦組合排行</h2>"
         "<div class='side-sub' id='side-sub'>"
-        "Residual：兩隻英雄同隊的實際勝率 - 預期勝率。<br>"
-        "z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>"
-        "排行依排序分排列：平均 residual × 覆蓋率。"
+        "先看這隻英雄和已選英雄的歷史搭配，再小幅修正陣容完整度。<br>"
+        "推薦度越高越適合；可信度是資料穩定度的摘要。"
         "</div>"
         "</div>"
         "<button class='side-close' id='side-close' type='button' aria-label='關閉推薦組合'>×</button>"
@@ -3810,7 +4017,7 @@ def render_html(
             emptyCopy: '換個角色篩選，或試試英雄中／英文名。',
             freshness: () => `${DATE_STR_ZH}（${TOTAL_GAMES} 場） · ${PATCH_LABEL}`,
             sideTitle: '推薦組合排行',
-            sideSub: 'Residual：兩隻英雄同隊的實際勝率 - 預期勝率。<br>z：residual 除以標準誤，數值越高代表訊號越不像樣本雜訊。<br>排行依排序分排列：平均 residual × 覆蓋率。',
+            sideSub: '先看這隻英雄和已選英雄的歷史搭配，再小幅修正陣容完整度。<br>推薦度越高越適合；可信度是資料穩定度的摘要。',
             closeRecs: '關閉推薦組合',
             openRecs: n => `看推薦組合 (${n})`,
             langToggleLabel: 'EN',
@@ -3819,8 +4026,8 @@ def render_html(
             removePick: name => `移除 ${name}`,
             pickEmpty: '尚未選擇',
             maxOnly: n => `最多只能選 ${n} 隻英雄。`,
-            pickNoteEmpty: n => `最多選 ${n} 隻；排序分 = 平均 residual × 覆蓋率，未覆蓋的 pair 視為 0。`,
-            pickNotePartial: want => `目前沒有 ${want}/${want} 全覆蓋候選，以下改用部分 pair 資料排序。`,
+            pickNoteEmpty: n => `最多選 ${n} 隻；先看推薦度，再看原因與樣本。`,
+            pickNotePartial: want => `目前這組選角的完整資料較少，先用已知搭配排序。`,
             pickNoteReady: (want, minGames) => `已選 ${want}/${MAX_TEAM_PICKS} 隻；pair 門檻 >= ${minGames} 場。`,
             panelEmpty: '先開啟「選擇你的隊友」，再從英雄列表點 1~4 隻英雄。系統會排出最適合補進來的英雄。',
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
@@ -3831,9 +4038,9 @@ def render_html(
             setSectionTitle: 'Augment 系列相性',
             setSectionMeta: '保守分數；負值代表相對較好，但未達正訊號',
             itemSectionTitle: '裝備取向',
-            itemSectionMeta: '每場只算主出裝；負值仍可能是相對最佳',
+            itemSectionMeta: '只顯示接近第一名的候選',
             augTypeSectionTitle: 'Augment 類型取向',
-            augTypeSectionMeta: '語意分組，同一套保守 residual 分數',
+            augTypeSectionMeta: '只顯示接近第一名的候選',
             relativeBest: '相對最佳',
             best: '最佳',
             worst: '最差',
@@ -3851,8 +4058,7 @@ def render_html(
             setMeta: (lift, avg, wr, games) => `英雄 ${lift} · 全體 ${avg} · WR ${wr} · ${games}場`,
             expected: value => ` · 預期 ${value}`,
             detailSectionTitle: 'Augment',
-            recRowTitle: (name, fit, liftAvg) => `${name} · 排序分 ${fit} · 平均 residual ${liftAvg}`,
-            recRowMeta: (fit, liftAvg, zAvg, minGames, coverage) => `排序 ${fit} · ${liftAvg} residual · z <span class="z">${zAvg}</span> · min ${minGames}場（${coverage}）`,
+            recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · 推薦度 ${fit} · 搭配 ${pairFit} · 陣容 ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}，tier ${tier}，勝率 ${wr}`,
         },
@@ -3871,7 +4077,7 @@ def render_html(
             emptyCopy: 'Try a different role, or search by Chinese / English champion name.',
             freshness: () => `Updated ${BUILD_DATE} (${TOTAL_GAMES} games) · ${PATCH_LABEL}`,
             sideTitle: 'Recommended teammates',
-            sideSub: 'Residual = actual same-team win rate minus expected win rate.<br>z = residual divided by standard error; higher means the signal is less likely to be sample noise.<br>Rows are ranked by average residual × coverage.',
+            sideSub: 'Recommendations start from historical teammate fit, then lightly adjust for team shape.<br>Higher fit is better; confidence summarizes data stability.',
             closeRecs: 'Close recommendations',
             openRecs: n => `Open recommendations (${n})`,
             langToggleLabel: '中',
@@ -3880,8 +4086,8 @@ def render_html(
             removePick: name => `Remove ${name}`,
             pickEmpty: 'Empty',
             maxOnly: n => `You can only pick up to ${n} champions.`,
-            pickNoteEmpty: n => `Pick up to ${n}; score = average residual × coverage, with missing pairs treated as 0.`,
-            pickNotePartial: want => `No fully covered ${want}/${want} candidates yet, so the list falls back to partial pair coverage.`,
+            pickNoteEmpty: n => `Pick up to ${n}; read fit first, then reason and sample size.`,
+            pickNotePartial: want => `This selected group has less complete data, so the list uses known teammate fits first.`,
             pickNoteReady: (want, minGames) => `${want}/${MAX_TEAM_PICKS} picked; pair threshold >= ${minGames} games.`,
             panelEmpty: 'Turn on teammate mode, then click 1-4 champions in the grid. The site will rank the best additions.',
             panelNoData: 'This combination does not have enough pair data yet.',
@@ -3892,9 +4098,9 @@ def render_html(
             setSectionTitle: 'Augment Sets',
             setSectionMeta: 'Conservative score; negative can still be relative-best',
             itemSectionTitle: 'Item Styles',
-            itemSectionMeta: 'One main build per game; negative can still be relative-best',
+            itemSectionMeta: 'Only near-tied candidates are shown',
             augTypeSectionTitle: 'Augment Types',
-            augTypeSectionMeta: 'Semantic groups with the same conservative residual score',
+            augTypeSectionMeta: 'Only near-tied candidates are shown',
             relativeBest: 'Relative Best',
             best: 'Best',
             worst: 'Worst',
@@ -3912,8 +4118,7 @@ def render_html(
             setMeta: (lift, avg, wr, games) => `champ ${lift} · global ${avg} · WR ${wr} · ${games} games`,
             expected: value => ` · expected ${value}`,
             detailSectionTitle: 'Augments',
-            recRowTitle: (name, fit, liftAvg) => `${name} · fit score ${fit} · average residual ${liftAvg}`,
-            recRowMeta: (fit, liftAvg, zAvg, minGames, coverage) => `fit ${fit} · ${liftAvg} residual · z <span class="z">${zAvg}</span> · min ${minGames} games (${coverage})`,
+            recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · fit ${fit} · pair ${pairFit} · comp ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}, tier ${tier}, win rate ${wr}`,
         }
@@ -4093,42 +4298,38 @@ def render_html(
                 </div>
             `;
         };
-        const buildFitCard = (entry, kind) => {
+        const buildFitChip = (entry, kind) => {
             const name = setEntryName(entry);
             const score = kind === 'bad' ? (entry.badScore ?? entry.res) : (entry.score ?? entry.res);
             const titleAttr = copy.setTitle(name, signed(entry.res), signed(entry.lift), signed(entry.avg), pct(entry.wr), entry.g);
             return `
-                <div class="fit-card ${kind}" title="${escHtml(titleAttr)}">
-                    <div class="fit-name">${escHtml(name)}</div>
-                    <div class="fit-score">${signed(score)}</div>
-                    <div class="fit-meta">${copy.setMeta(signed(entry.lift), signed(entry.avg), pct(entry.wr), entry.g)}</div>
-                </div>
+                <span class="fit-chip ${kind}" title="${escHtml(`${name} ${signed(score)} · ${titleAttr}`)}">${escHtml(name)}</span>
             `;
         };
         const buildFitList = (rows, kind) => {
             if (!rows || !rows.length) return `<div class="mate-list empty-list">${copy.insufficient}</div>`;
-            return `<div class="fit-list">${rows.slice(0, 4).map(entry => buildFitCard(entry, kind)).join('')}</div>`;
+            return `<div class="fit-chip-list">${rows.slice(0, 3).map(entry => buildFitChip(entry, kind)).join('')}</div>`;
+        };
+        const closeFitRows = rows => {
+            if (!rows || !rows.length) return [];
+            const topScore = rows[0].score ?? rows[0].res ?? 0;
+            const closeGap = 0.004;
+            return rows.filter((entry, idx) => {
+                if (idx === 0) return true;
+                const score = entry.score ?? entry.res ?? topScore;
+                return (topScore - score) <= closeGap;
+            }).slice(0, 3);
         };
         const buildAffinitySection = (title, meta, payload) => {
-            const bestRows = (payload && payload.top) || [];
-            const weakRows = (payload && payload.bot) || [];
-            if (!bestRows.length && !weakRows.length) return '';
+            const bestRows = closeFitRows((payload && payload.top) || []);
+            if (!bestRows.length) return '';
             return `
                 <div class="detail-section">
                     <div class="detail-section-head">
                         <h3>${title}</h3>
                         <span class="section-meta">${meta}</span>
                     </div>
-                    <div class="detail-cols">
-                        <div class="detail-col best">
-                            <h3>${copy.relativeBest}</h3>
-                            ${buildFitList(bestRows, 'good')}
-                        </div>
-                        <div class="detail-col worst">
-                            <h3>${copy.weak}</h3>
-                            ${buildFitList(weakRows, 'bad')}
-                        </div>
-                    </div>
+                    ${buildFitList(bestRows, 'good')}
                 </div>
             `;
         };
@@ -4219,10 +4420,98 @@ def render_html(
         });
     }
 
+    function adBin(adShare) {
+        if (adShare < 0.35) return '<35% AD';
+        if (adShare < 0.45) return '35-45% AD';
+        if (adShare < 0.55) return '45-55% AD';
+        if (adShare < 0.65) return '55-65% AD';
+        return '>=65% AD';
+    }
+
+    function countGroup(projectedCount) {
+        if (projectedCount < 0.5) return '0';
+        if (projectedCount < 1.5) return '1';
+        return '2+';
+    }
+
+    function frontGroup(projectedCount) {
+        return countGroup(projectedCount) + ' front';
+    }
+
+    function tableValue(name, key) {
+        const config = DATA.recommendation_composition || {};
+        const tables = config.tables || {};
+        const table = tables[name] || {};
+        const raw = table[key];
+        return Number.isFinite(Number(raw)) ? Number(raw) : 0;
+    }
+
+    function teamComposition(ids) {
+        const config = DATA.recommendation_composition || {};
+        const thresholds = config.lack_thresholds || {};
+        const sums = { phys: 0, magic: 0, true: 0, wave: 0, cc: 0, engage: 0, damage: 0, poke: 0, sustain: 0, front: 0 };
+        const roles = { Mage: 0, Marksman: 0 };
+        let frontCount = 0;
+        ids.forEach(rawId => {
+            const info = DATA.champs[String(rawId)];
+            if (!info) return;
+            const comp = info.comp || {};
+            Object.keys(sums).forEach(key => {
+                sums[key] += Number(comp[key] || 0);
+            });
+            if (Number(comp.front || 0) >= 2.0) frontCount += 1;
+            (info.tags || []).forEach(tag => {
+                if (Object.prototype.hasOwnProperty.call(roles, tag)) roles[tag] += 1;
+            });
+        });
+
+        const size = Math.max(1, ids.length);
+        const projection = 5 / size;
+        const thresholdScale = size / 5;
+        const adDen = sums.phys + sums.magic;
+        const adShare = adDen > 0 ? sums.phys / adDen : 0.5;
+        const lacks = {};
+        ['wave', 'cc', 'engage', 'damage', 'poke', 'sustain', 'front'].forEach(key => {
+            const threshold = Number(thresholds[key] || 0);
+            lacks[key] = threshold > 0 && sums[key] < threshold * thresholdScale;
+        });
+        const allLacks = Object.values(lacks).filter(Boolean).length;
+        return {
+            adBin: adBin(adShare),
+            frontGroup: frontGroup(frontCount * projection),
+            mageGroup: countGroup(roles.Mage * projection),
+            marksmanGroup: countGroup(roles.Marksman * projection),
+            waveGroup: lacks.wave ? 'wave lack' : 'wave ok',
+            engageGroup: lacks.engage ? 'engage lack' : 'engage ok',
+            pokeGroup: lacks.poke ? 'poke lack' : 'poke ok',
+            allLacksGroup: countGroup(allLacks * projection),
+        };
+    }
+
+    function teamCompositionScore(ids) {
+        if (!ids.length) return 0;
+        const config = DATA.recommendation_composition || {};
+        const weights = config.table_weights || {};
+        const clamp = Number(config.clamp || 0.05);
+        const comp = teamComposition(ids);
+        let score = 0;
+        score += Number(weights.ad_front || 0) * tableValue('ad_front', `${comp.frontGroup}|${comp.adBin}`);
+        score += Number(weights.poke_front || 0) * tableValue('poke_front', `${comp.frontGroup}|${comp.pokeGroup}`);
+        score += Number(weights.wave_engage || 0) * tableValue('wave_engage', `${comp.waveGroup}|${comp.engageGroup}`);
+        score += Number(weights.all_lacks || 0) * tableValue('all_lacks', comp.allLacksGroup);
+        score += Number(weights.mage_ad || 0) * tableValue('mage_ad', `${comp.mageGroup}|${comp.adBin}`);
+        score += Number(weights.marksman_ad || 0) * tableValue('marksman_ad', `${comp.marksmanGroup}|${comp.adBin}`);
+        const sizeWeight = Math.min(1, Math.max(0, (ids.length - 1) / 4));
+        return Math.max(-clamp, Math.min(clamp, score)) * sizeWeight;
+    }
+
     function aggregateRecommendations() {
         if (!teamPicks.length) return [];
         const pickedSet = new Set(teamPicks);
         const want = teamPicks.length;
+        const compositionConfig = DATA.recommendation_composition || {};
+        const compositionWeight = Number(compositionConfig.weight || 0);
+        const beforeComposition = teamCompositionScore(teamPicks);
         const byCandidate = new Map();
         teamPicks.forEach(anchorId => {
             const info = DATA.champs[anchorId];
@@ -4247,23 +4536,88 @@ def render_html(
             });
         });
         return [...byCandidate.values()]
-            .map(row => ({
-                ...row,
-                full: row.coverage === want,
-                coverageRatio: row.coverage / want,
-                fitScore: row.liftSum / want,
-                zAvg: row.zSum / row.coverage,
-                liftAvg: row.liftSum / row.coverage,
-                wrAvg: row.wrSum / row.coverage,
-            }))
+            .map(row => {
+                const coverageRatio = row.coverage / want;
+                const pairFitScore = row.liftSum / want;
+                const compositionDelta = teamCompositionScore([...teamPicks, row.id]) - beforeComposition;
+                const compositionCoverage = 0.5 + 0.5 * coverageRatio;
+                const compositionContribution = compositionWeight * compositionDelta * compositionCoverage;
+                return {
+                    ...row,
+                    full: row.coverage === want,
+                    coverageRatio,
+                    pairFitScore,
+                    compositionDelta,
+                    compositionContribution,
+                    fitScore: pairFitScore + compositionContribution,
+                    zAvg: row.zSum / row.coverage,
+                    liftAvg: row.liftSum / row.coverage,
+                    wrAvg: row.wrSum / row.coverage,
+                };
+            })
             .sort((a, b) =>
                 b.fitScore - a.fitScore ||
+                b.pairFitScore - a.pairFitScore ||
                 b.liftAvg - a.liftAvg ||
                 b.zAvg - a.zAvg ||
                 Number(b.full) - Number(a.full) ||
                 b.coverage - a.coverage ||
                 b.minGames - a.minGames
             );
+    }
+
+    function recStrengthLabel(score) {
+        if (currentLang === 'en') {
+            if (score >= 0.05) return 'Excellent fit';
+            if (score >= 0.03) return 'Good fit';
+            if (score >= 0.01) return 'Playable fit';
+            return 'Low edge';
+        }
+        if (score >= 0.05) return '強烈推薦';
+        if (score >= 0.03) return '推薦';
+        if (score >= 0.01) return '可考慮';
+        return '優勢較小';
+    }
+
+    function confidenceLabel(row) {
+        const strongCoverage = row.coverageRatio >= 0.75;
+        const enoughGames = row.minGames >= 60;
+        const signal = Math.abs(row.zAvg || 0);
+        if (strongCoverage && enoughGames && signal >= 1.0) {
+            return currentLang === 'en' ? 'High confidence' : '可信度高';
+        }
+        if (row.coverageRatio >= 0.5 && row.minGames >= 40 && signal >= 0.6) {
+            return currentLang === 'en' ? 'Medium confidence' : '可信度中';
+        }
+        return currentLang === 'en' ? 'Early signal' : '樣本偏早';
+    }
+
+    function compReasonLabel(value) {
+        const abs = Math.abs(value);
+        if (abs < 0.001) return currentLang === 'en' ? 'team neutral' : '陣容中性';
+        if (value > 0) return currentLang === 'en' ? `team +${(value * 100).toFixed(1)}%` : `陣容加分 ${signed(value)}`;
+        return currentLang === 'en' ? `team ${(value * 100).toFixed(1)}%` : `陣容扣分 ${signed(value)}`;
+    }
+
+    function recMetaHtml(row) {
+        const strength = recStrengthLabel(row.fitScore);
+        const confidence = confidenceLabel(row);
+        const pairClass = row.pairFitScore >= 0 ? 'good' : 'bad';
+        const compClass = row.compositionContribution > 0.001 ? 'good' : (row.compositionContribution < -0.001 ? 'bad' : 'muted');
+        const pairLabel = currentLang === 'en'
+            ? `pair ${signed(row.pairFitScore)}`
+            : `搭配 ${signed(row.pairFitScore)}`;
+        return `
+            <span class="rec-scoreline">
+                <span class="rec-score">${currentLang === 'en' ? 'Fit' : '推薦度'} ${signed(row.fitScore)}</span>
+                <span class="rec-badge">${escHtml(strength)}</span>
+            </span>
+            <span class="rec-detail">
+                <span class="${pairClass}">${escHtml(pairLabel)}</span>
+                <span class="${compClass}">${escHtml(compReasonLabel(row.compositionContribution))}</span>
+                <span class="muted">${escHtml(confidence)}</span>
+            </span>
+        `;
     }
 
     function renderSidePanel() {
@@ -4332,16 +4686,10 @@ def render_html(
             const info = DATA.champs[row.id];
             const name = info ? champName(info) : ('#' + row.id);
             const image = info && info.image ? info.image : '';
-            const coverage = `${row.coverage}/${want}`;
-            const meta = copy.recRowMeta(
-                signed(row.fitScore),
-                signed(row.liftAvg),
-                zFmt(row.zAvg),
-                row.minGames,
-                coverage,
-            );
+            const confidence = confidenceLabel(row);
+            const meta = recMetaHtml(row);
             return `
-                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(copy.recRowTitle(name, signed(row.fitScore), signed(row.liftAvg)))}">
+                <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(copy.recRowTitle(name, signed(row.fitScore), signed(row.pairFitScore), signed(row.compositionContribution), confidence))}">
                     <span class="rec-rank">${idx + 1}</span>
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
                     <span class="rec-main">
@@ -4920,6 +5268,7 @@ def main(
     html = render_html(
         champ_records,
         champ_meta,
+        champ_profiles,
         picks,
         set_affinity,
         item_style_affinity,
