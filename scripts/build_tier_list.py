@@ -264,6 +264,9 @@ COMPOSITION_LACK_THRESHOLDS = {
 }
 RECOMMENDATION_COMPOSITION_WEIGHT = 0.25
 RECOMMENDATION_COMPOSITION_CLAMP = 0.05
+RECOMMENDATION_DAMAGE_MIX_TARGET_AD = 0.40
+RECOMMENDATION_DAMAGE_MIX_WEIGHT = 0.18
+RECOMMENDATION_DAMAGE_MIX_CLAMP = 0.025
 RECOMMENDATION_COMPOSITION_TABLE_WEIGHTS = {
     "ad_front": 0.55,
     "poke_front": 0.30,
@@ -820,6 +823,11 @@ TAG_OVERRIDES: dict[str, list[str]] = {
 }
 
 
+CHAMPION_NAME_OVERRIDES: dict[str, dict[str, str]] = {
+    "Renata": {"name_zh": "睿娜妲", "name_en": "Renata"},
+}
+
+
 def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
     if version is None:
         r = httpx.get("https://ddragon.leagueoflegends.com/api/versions.json", timeout=15)
@@ -844,10 +852,16 @@ def load_champion_metadata(version: str | None) -> tuple[str, dict[int, dict]]:
         if alias in TAG_OVERRIDES:
             applied.append((alias, list(tags), list(TAG_OVERRIDES[alias])))
             tags = list(TAG_OVERRIDES[alias])
+        name_zh = entry_zh.get("name") or entry_en.get("name") or alias
+        name_en = entry_en.get("name") or alias
+        if alias in CHAMPION_NAME_OVERRIDES:
+            name_override = CHAMPION_NAME_OVERRIDES[alias]
+            name_zh = name_override.get("name_zh", name_zh)
+            name_en = name_override.get("name_en", name_en)
         by_id[int(base_entry["key"])] = {
-            "name": entry_zh.get("name") or entry_en.get("name") or alias,
-            "name_zh": entry_zh.get("name") or entry_en.get("name") or alias,
-            "name_en": entry_en.get("name") or alias,
+            "name": name_zh,
+            "name_zh": name_zh,
+            "name_en": name_en,
             "alias": alias,
             "tags": tags,
             "image": f"https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{alias}.png",
@@ -2465,7 +2479,7 @@ def render_html(
         align-items: start;
     }
     .app-shell.with-side-panel {
-        grid-template-columns: minmax(0, 1fr) 320px;
+        grid-template-columns: minmax(0, 1fr) minmax(480px, 520px);
     }
     .main-col { min-width: 0; }
     .icon-btn,
@@ -2751,11 +2765,14 @@ def render_html(
         grid-template-columns: 22px 40px 1fr;
         gap: 8px;
         align-items: center;
+        width: 100%;
         padding: 8px;
         border-radius: 10px;
         background: #1b2030;
         border: 1px solid rgba(255,255,255,0.05);
         cursor: pointer;
+        font: inherit;
+        text-align: left;
         transition: background 0.12s, border-color 0.12s, transform 0.08s;
     }
     .rec-row:hover {
@@ -2782,12 +2799,20 @@ def render_html(
         gap: 4px;
         min-width: 0;
     }
+    .rec-titleline {
+        display: grid;
+        grid-template-columns: minmax(96px, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
     .rec-name {
         display: block;
         color: #e6e8eb;
         font-size: 13px;
         font-weight: 600;
         line-height: 1.25;
+        min-width: 0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2800,6 +2825,7 @@ def render_html(
         font-size: 11px;
         line-height: 1.35;
         font-variant-numeric: tabular-nums;
+        min-width: 0;
     }
     .rec-scoreline {
         display: flex;
@@ -2808,26 +2834,27 @@ def render_html(
         gap: 5px;
     }
     .rec-score {
-        color: #f5d780;
+        color: oklch(0.76 0.09 92);
         font-weight: 700;
+        justify-self: end;
+        white-space: nowrap;
     }
-    .rec-badge {
-        display: inline-flex;
-        align-items: center;
-        min-height: 18px;
-        padding: 2px 6px;
-        border-radius: 999px;
-        background: rgba(245,215,128,0.11);
-        border: 1px solid rgba(245,215,128,0.22);
-        color: #f5d780;
-        font-size: 10px;
-        font-weight: 700;
-        line-height: 1;
+    .rec-score.fit-top {
+        color: oklch(0.91 0.13 92);
+        text-shadow: 0 0 12px rgba(245, 215, 128, 0.24);
     }
+    .rec-score.fit-strong { color: oklch(0.84 0.12 92); }
+    .rec-score.fit-solid { color: oklch(0.76 0.09 92); }
+    .rec-score.fit-soft { color: oklch(0.68 0.06 92); }
+    .rec-score.fit-floor { color: #9aa0a6; }
     .rec-detail {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 8px;
+        display: grid;
+        grid-template-columns: auto auto auto;
+        justify-content: start;
+        gap: 8px;
+        align-items: center;
+        min-width: 0;
+        white-space: nowrap;
     }
     .rec-detail .good,
     .rec-meta .z {
@@ -3481,7 +3508,7 @@ def render_html(
         color: #555a63;
         font-size: 10px;
     }
-    @media (max-width: 1080px) {
+    @media (max-width: 1180px) {
         .app-shell,
         .app-shell.with-side-panel { grid-template-columns: 1fr; }
         .side-panel {
@@ -3551,6 +3578,20 @@ def render_html(
             background: rgba(5, 8, 13, 0.72);
         }
         .side-close { display: inline-flex; }
+        .rec-titleline {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .rec-name { flex: 1 1 86px; }
+        .rec-score,
+        .rec-badge { justify-self: auto; }
+        .rec-detail {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 8px;
+            white-space: normal;
+        }
         .detail-host {
             position: fixed;
             z-index: 70;
@@ -3704,13 +3745,18 @@ def render_html(
             "lack_thresholds": COMPOSITION_LACK_THRESHOLDS,
             "table_weights": RECOMMENDATION_COMPOSITION_TABLE_WEIGHTS,
             "tables": RECOMMENDATION_COMPOSITION_TABLES,
+            "damage_mix": {
+                "target_ad_share": RECOMMENDATION_DAMAGE_MIX_TARGET_AD,
+                "weight": RECOMMENDATION_DAMAGE_MIX_WEIGHT,
+                "clamp": RECOMMENDATION_DAMAGE_MIX_CLAMP,
+            },
         },
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
     og_patch_label = f"patch {patch_prefix}" if patch_prefix else "all patches"
     og_title = f"{header_title}資料庫"
-    og_desc = f"{og_patch_label}｜【英雄 x 海克斯勝率 · 組隊推薦】&#10;by 路燈"
+    og_desc = f"{og_patch_label}｜【英雄 x 增幅裝置勝率 · 組隊推薦】&#10;by 路燈"
 
     meta_lines: list[str] = []
     meta_lines.append("<meta charset='utf-8'>")
@@ -3968,8 +4014,8 @@ def render_html(
         "<div>"
         "<h2 id='side-title'>推薦組合排行</h2>"
         "<div class='side-sub' id='side-sub'>"
-        "先看這隻英雄和已選英雄的歷史搭配，再小幅修正陣容完整度。<br>"
-        "推薦度越高越適合；可信度是資料穩定度的摘要。"
+        "依歷史搭配排序，並修正傷害比例與陣容缺口。<br>"
+        "推薦度越高越適合；可信度是資料穩定度摘要。"
         "</div>"
         "</div>"
         "<button class='side-close' id='side-close' type='button' aria-label='關閉推薦組合'>×</button>"
@@ -4017,7 +4063,7 @@ def render_html(
             emptyCopy: '換個角色篩選，或試試英雄中／英文名。',
             freshness: () => `${DATE_STR_ZH}（${TOTAL_GAMES} 場） · ${PATCH_LABEL}`,
             sideTitle: '推薦組合排行',
-            sideSub: '先看這隻英雄和已選英雄的歷史搭配，再小幅修正陣容完整度。<br>推薦度越高越適合；可信度是資料穩定度的摘要。',
+            sideSub: '依歷史搭配排序，並修正傷害比例與陣容缺口。<br>推薦度越高越適合；可信度是資料穩定度摘要。',
             closeRecs: '關閉推薦組合',
             openRecs: n => `看推薦組合 (${n})`,
             langToggleLabel: 'EN',
@@ -4033,17 +4079,19 @@ def render_html(
             panelNoData: '這組英雄目前沒有足夠的 pair 資料。',
             detailEmpty: '這個英雄目前沒有可顯示的資料。',
             detailClose: '關閉詳細資訊',
-            pairSectionTitle: '搭檔組合',
-            pairSectionMeta: minGames => `依照搭檔的適配度排名，不是單純看勝率，至少 ${minGames} 場`,
-            setSectionTitle: 'Augment 系列相性',
+            pairSectionTitle: '推薦搭檔',
+            pairSectionMeta: '適配度為主，勝率為輔',
+            setSectionTitle: '增幅裝置系列相性',
             setSectionMeta: '保守分數；負值代表相對較好，但未達正訊號',
-            itemSectionTitle: '裝備取向',
-            itemSectionMeta: '只顯示接近第一名的候選',
-            augTypeSectionTitle: 'Augment 類型取向',
-            augTypeSectionMeta: '只顯示接近第一名的候選',
+            itemSectionTitle: '推薦出裝',
+            itemSectionMeta: '',
+            augTypeSectionTitle: '推薦增幅裝置類型',
+            augTypeSectionMeta: '',
             relativeBest: '相對最佳',
             best: '最佳',
             worst: '最差',
+            bestAugments: '最佳增幅裝置',
+            worstAugments: '最差增幅裝置',
             weak: '偏弱',
             insufficient: '資料不足',
             rarityLabels: { kPrismatic: '彩色', kGold: '金色', kSilver: '銀色' },
@@ -4057,7 +4105,6 @@ def render_html(
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · 英雄 lift ${lift} · 全體平均 ${avg} · WR ${wr} · ${games}場`,
             setMeta: (lift, avg, wr, games) => `英雄 ${lift} · 全體 ${avg} · WR ${wr} · ${games}場`,
             expected: value => ` · 預期 ${value}`,
-            detailSectionTitle: 'Augment',
             recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · 推薦度 ${fit} · 搭配 ${pairFit} · 陣容 ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}，tier ${tier}，勝率 ${wr}`,
@@ -4077,7 +4124,7 @@ def render_html(
             emptyCopy: 'Try a different role, or search by Chinese / English champion name.',
             freshness: () => `Updated ${BUILD_DATE} (${TOTAL_GAMES} games) · ${PATCH_LABEL}`,
             sideTitle: 'Recommended teammates',
-            sideSub: 'Recommendations start from historical teammate fit, then lightly adjust for team shape.<br>Higher fit is better; confidence summarizes data stability.',
+            sideSub: 'Ranked by teammate fit, then adjusted for damage mix and team gaps.<br>Higher fit is better; confidence summarizes data stability.',
             closeRecs: 'Close recommendations',
             openRecs: n => `Open recommendations (${n})`,
             langToggleLabel: '中',
@@ -4093,17 +4140,19 @@ def render_html(
             panelNoData: 'This combination does not have enough pair data yet.',
             detailEmpty: 'No detail data is available for this champion yet.',
             detailClose: 'Close details',
-            pairSectionTitle: 'Pairings',
-            pairSectionMeta: minGames => `Ranked by teammate fit, not raw win rate, at least ${minGames} games`,
+            pairSectionTitle: 'Recommended Pairings',
+            pairSectionMeta: 'Fit first, win rate second',
             setSectionTitle: 'Augment Sets',
             setSectionMeta: 'Conservative score; negative can still be relative-best',
-            itemSectionTitle: 'Item Styles',
-            itemSectionMeta: 'Only near-tied candidates are shown',
-            augTypeSectionTitle: 'Augment Types',
-            augTypeSectionMeta: 'Only near-tied candidates are shown',
+            itemSectionTitle: 'Recommended Items',
+            itemSectionMeta: '',
+            augTypeSectionTitle: 'Recommended Augment Types',
+            augTypeSectionMeta: '',
             relativeBest: 'Relative Best',
             best: 'Best',
             worst: 'Worst',
+            bestAugments: 'Best Augments',
+            worstAugments: 'Worst Augments',
             weak: 'Weak',
             insufficient: 'Not enough data',
             rarityLabels: { kPrismatic: 'Prismatic', kGold: 'Gold', kSilver: 'Silver' },
@@ -4117,7 +4166,6 @@ def render_html(
             setTitle: (name, res, lift, avg, wr, games) => `${name} · residual ${res} · champion lift ${lift} · global average ${avg} · WR ${wr} · ${games} games`,
             setMeta: (lift, avg, wr, games) => `champ ${lift} · global ${avg} · WR ${wr} · ${games} games`,
             expected: value => ` · expected ${value}`,
-            detailSectionTitle: 'Augments',
             recRowTitle: (name, fit, pairFit, comp, confidence) => `${name} · fit ${fit} · pair ${pairFit} · comp ${comp} · ${confidence}`,
             champCardTitle: (name, wr, games, raw) => `${name} · WR ${wr} · games ${games} · raw ${raw}`,
             champCardAria: (name, alias, tier, wr) => `${name} ${alias}, tier ${tier}, win rate ${wr}`,
@@ -4323,11 +4371,12 @@ def render_html(
         const buildAffinitySection = (title, meta, payload) => {
             const bestRows = closeFitRows((payload && payload.top) || []);
             if (!bestRows.length) return '';
+            const metaHtml = meta ? `<span class="section-meta">${meta}</span>` : '';
             return `
                 <div class="detail-section">
                     <div class="detail-section-head">
                         <h3>${title}</h3>
-                        <span class="section-meta">${meta}</span>
+                        ${metaHtml}
                     </div>
                     ${buildFitList(bestRows, 'good')}
                 </div>
@@ -4340,20 +4389,17 @@ def render_html(
                 <span class="cname" id="detail-title-${cid}">${escHtml(champName(info))}</span>
             </div>
             <div class="detail-section">
-                <div class="detail-section-head">
-                    <h3>${copy.detailSectionTitle}</h3>
-                </div>
                 <div class="detail-cols pair-cols">
                     <div class="detail-col best">
                         <div class="detail-col-heading">
-                            <h3>${copy.best}</h3>
+                            <h3>${copy.bestAugments}</h3>
                             ${buildSetSummary(setTop)}
                         </div>
                         ${topRows}
                     </div>
                     <div class="detail-col worst">
                         <div class="detail-col-heading">
-                            <h3>${copy.worst}</h3>
+                            <h3>${copy.worstAugments}</h3>
                             ${buildSetSummary(setBot, true)}
                         </div>
                         ${botRows}
@@ -4365,7 +4411,7 @@ def render_html(
             <div class="detail-section">
                 <div class="detail-section-head">
                     <h3>${copy.pairSectionTitle}</h3>
-                    <span class="section-meta">${copy.pairSectionMeta(DATA.min_synergy_games)}</span>
+                    <span class="section-meta">${copy.pairSectionMeta}</span>
                 </div>
                 <div class="detail-cols">
                     <div class="detail-col best">
@@ -4505,13 +4551,28 @@ def render_html(
         return Math.max(-clamp, Math.min(clamp, score)) * sizeWeight;
     }
 
+    function clampAbs(value, maxAbs) {
+        return Math.max(-maxAbs, Math.min(maxAbs, value));
+    }
+
+    function damageMixScore(comp) {
+        const mix = (DATA.recommendation_composition || {}).damage_mix || {};
+        const target = Number(mix.target_ad_share || 0.4);
+        return -Math.abs(Number(comp.adShare || 0.5) - target);
+    }
+
     function aggregateRecommendations() {
         if (!teamPicks.length) return [];
         const pickedSet = new Set(teamPicks);
         const want = teamPicks.length;
         const compositionConfig = DATA.recommendation_composition || {};
         const compositionWeight = Number(compositionConfig.weight || 0);
+        const damageMixConfig = compositionConfig.damage_mix || {};
+        const damageMixWeight = Number(damageMixConfig.weight || 0);
+        const damageMixClamp = Number(damageMixConfig.clamp || 0.025);
         const beforeComposition = teamCompositionScore(teamPicks);
+        const beforeTeamComp = teamComposition(teamPicks);
+        const beforeDamageMix = damageMixScore(beforeTeamComp);
         const byCandidate = new Map();
         teamPicks.forEach(anchorId => {
             const info = DATA.champs[anchorId];
@@ -4539,16 +4600,39 @@ def render_html(
             .map(row => {
                 const coverageRatio = row.coverage / want;
                 const pairFitScore = row.liftSum / want;
-                const compositionDelta = teamCompositionScore([...teamPicks, row.id]) - beforeComposition;
+                const afterIds = [...teamPicks, row.id];
+                const afterTeamComp = teamComposition(afterIds);
+                const compositionDelta = teamCompositionScore(afterIds) - beforeComposition;
                 const compositionCoverage = 0.5 + 0.5 * coverageRatio;
-                const compositionContribution = compositionWeight * compositionDelta * compositionCoverage;
+                const tableContribution = compositionWeight * compositionDelta * compositionCoverage;
+                const damageMixDelta = damageMixScore(afterTeamComp) - beforeDamageMix;
+                const damageMixContribution = clampAbs(
+                    damageMixWeight * damageMixDelta * compositionCoverage,
+                    damageMixClamp,
+                );
+                const compositionContribution = tableContribution + damageMixContribution;
                 return {
                     ...row,
                     full: row.coverage === want,
                     coverageRatio,
                     pairFitScore,
                     compositionDelta,
+                    tableContribution,
+                    damageMixDelta,
+                    damageMixContribution,
                     compositionContribution,
+                    beforeAdShare: beforeTeamComp.adShare,
+                    afterAdShare: afterTeamComp.adShare,
+                    beforeFrontGroup: beforeTeamComp.frontGroup,
+                    afterFrontGroup: afterTeamComp.frontGroup,
+                    beforePokeGroup: beforeTeamComp.pokeGroup,
+                    afterPokeGroup: afterTeamComp.pokeGroup,
+                    beforeWaveGroup: beforeTeamComp.waveGroup,
+                    afterWaveGroup: afterTeamComp.waveGroup,
+                    beforeEngageGroup: beforeTeamComp.engageGroup,
+                    afterEngageGroup: afterTeamComp.engageGroup,
+                    beforeAllLacksGroup: beforeTeamComp.allLacksGroup,
+                    afterAllLacksGroup: afterTeamComp.allLacksGroup,
                     fitScore: pairFitScore + compositionContribution,
                     zAvg: row.zSum / row.coverage,
                     liftAvg: row.liftSum / row.coverage,
@@ -4592,14 +4676,42 @@ def render_html(
         return currentLang === 'en' ? 'Early signal' : '樣本偏早';
     }
 
-    function compReasonLabel(value) {
+    function compReasonLabel(row) {
+        const value = row.compositionContribution || 0;
         const abs = Math.abs(value);
+        const mixValue = row.damageMixContribution || 0;
+        if (Math.abs(mixValue) >= 0.004) {
+            const addsAD = Number(row.afterAdShare || 0) > Number(row.beforeAdShare || 0);
+            if (mixValue > 0) {
+                if (currentLang === 'en') return addsAD ? `adds AD ${signed(value)}` : `adds AP ${signed(value)}`;
+                return addsAD ? `補AD ${signed(value)}` : `補AP ${signed(value)}`;
+            }
+            if (currentLang === 'en') return `damage skew ${signed(value)}`;
+            return `傷害偏科 ${signed(value)}`;
+        }
+        if (value > 0.001) {
+            if (row.beforeFrontGroup !== row.afterFrontGroup && row.afterFrontGroup !== '0 front') {
+                return currentLang === 'en' ? `adds frontline ${signed(value)}` : `補前排 ${signed(value)}`;
+            }
+            if (row.beforePokeGroup === 'poke lack' && row.afterPokeGroup === 'poke ok') {
+                return currentLang === 'en' ? `adds poke ${signed(value)}` : `補Poke ${signed(value)}`;
+            }
+            if (row.beforeWaveGroup === 'wave lack' && row.afterWaveGroup === 'wave ok') {
+                return currentLang === 'en' ? `adds waveclear ${signed(value)}` : `補清兵 ${signed(value)}`;
+            }
+            if (row.beforeEngageGroup === 'engage lack' && row.afterEngageGroup === 'engage ok') {
+                return currentLang === 'en' ? `adds engage ${signed(value)}` : `補開戰 ${signed(value)}`;
+            }
+            if (row.beforeAllLacksGroup !== row.afterAllLacksGroup) {
+                return currentLang === 'en' ? `rounds team ${signed(value)}` : `補陣容 ${signed(value)}`;
+            }
+        }
         if (abs < 0.001) return currentLang === 'en' ? 'team neutral' : '陣容中性';
         if (value > 0) return currentLang === 'en' ? `team +${(value * 100).toFixed(1)}%` : `陣容加分 ${signed(value)}`;
         return currentLang === 'en' ? `team ${(value * 100).toFixed(1)}%` : `陣容扣分 ${signed(value)}`;
     }
 
-    function recMetaHtml(row) {
+    function recMetaHtml(row, name) {
         const strength = recStrengthLabel(row.fitScore);
         const confidence = confidenceLabel(row);
         const pairClass = row.pairFitScore >= 0 ? 'good' : 'bad';
@@ -4608,13 +4720,14 @@ def render_html(
             ? `pair ${signed(row.pairFitScore)}`
             : `搭配 ${signed(row.pairFitScore)}`;
         return `
-            <span class="rec-scoreline">
+            <span class="rec-titleline">
+                <span class="rec-name">${escHtml(name)}</span>
                 <span class="rec-score">${currentLang === 'en' ? 'Fit' : '推薦度'} ${signed(row.fitScore)}</span>
                 <span class="rec-badge">${escHtml(strength)}</span>
             </span>
             <span class="rec-detail">
                 <span class="${pairClass}">${escHtml(pairLabel)}</span>
-                <span class="${compClass}">${escHtml(compReasonLabel(row.compositionContribution))}</span>
+                <span class="${compClass}">${escHtml(compReasonLabel(row))}</span>
                 <span class="muted">${escHtml(confidence)}</span>
             </span>
         `;
@@ -4687,13 +4800,12 @@ def render_html(
             const name = info ? champName(info) : ('#' + row.id);
             const image = info && info.image ? info.image : '';
             const confidence = confidenceLabel(row);
-            const meta = recMetaHtml(row);
+            const meta = recMetaHtml(row, name);
             return `
                 <button class="rec-row" type="button" data-cid="${row.id}" title="${escHtml(copy.recRowTitle(name, signed(row.fitScore), signed(row.pairFitScore), signed(row.compositionContribution), confidence))}">
                     <span class="rec-rank">${idx + 1}</span>
                     ${image ? `<img loading="lazy" src="${image}" alt="">` : '<div style="width:40px;height:40px;border-radius:8px;background:#2a3142"></div>'}
                     <span class="rec-main">
-                        <span class="rec-name">${escHtml(name)}</span>
                         <span class="rec-meta">${meta}</span>
                     </span>
                 </button>
